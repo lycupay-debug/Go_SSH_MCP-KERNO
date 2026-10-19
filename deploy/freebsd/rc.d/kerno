@@ -1,0 +1,22 @@
+#!/bin/sh
+#
+# PROVIDE: kerno
+# REQUIRE: LOGIN postgresql
+# KEYWORD: shutdown
+#
+. /etc/rc.subr
+
+name="kerno"
+rcvar="kerno_enable"
+
+command="/usr/sbin/daemon"
+procname="/usr/sbin/daemon"
+pidfile="/var/run/kerno.pid"
+command_args="-P ${pidfile} -o /var/log/kerno.log /usr/bin/env GO_SSH_MCP_CONFIG=/usr/local/etc/kerno.conf /opt/kerno/bin/go-ssh-mcp"
+
+load_rc_config "$name"
+PATH="/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/sbin:/usr/local/bin"
+export PATH
+: ${kerno_enable:="NO"}
+
+run_rc_command "$1"

@@ -1,0 +1,49 @@
+name: Go_SSH_MCP CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: kerno_test
+          POSTGRES_USER: kerno_test_user
+          POSTGRES_PASSWORD: ci-only-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U kerno_test_user -d kerno_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install C JSON dependency
+        run: sudo apt-get update && sudo apt-get install -y libjson-c-dev postgresql-client
+      - name: Build C executor
+        run: make build-c
+      - name: Apply database migrations
+        env:
+          PGHOST: 127.0.0.1
+          PGDATABASE: kerno_test
+          PGUSER: kerno_test_user
+          PGPASSWORD: ci-only-password
+          PGSSLMODE: disable
+        run: for migration in migrations/*.sql; do psql -v ON_ERROR_STOP=1 -f "$migration"; done
+      - name: Test
+        env:
+          GO_SSH_MCP_TEST_DATABASE_URL: postgres://kerno_test_user@127.0.0.1:5432/kerno_test?sslmode=disable
+          PGPASSWORD: ci-only-password
+          C_EXECUTOR_TEST_PATH: ${{ github.workspace }}/bin/host-executor
+        run: go test -race -count=1 ./...
+      - name: Vet and build
+        run: go vet ./... && make build

@@ -1,0 +1,27 @@
+name: Package source release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  source-archive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Create reproducible source archive and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          git archive --format=tar.gz --prefix=kerno-source/ "$GITHUB_REF_NAME" -o kerno-source.tar.gz
+          sha256sum kerno-source.tar.gz > SHA256SUMS
+      - name: Publish source archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" kerno-source.tar.gz SHA256SUMS --generate-notes

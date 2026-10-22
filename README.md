@@ -1,5 +1,7 @@
 # KERNO — Go SSH MCP
 
+请不要在攻击我的服务器，我已对所有做出渗透性行为的IP网段进行永久封禁。如果有必要的话，我将删除服务器实例。也不会让你得到任何东西！
+有任何问题请联系 fuckyou.mail_box@protonmail.com
 KERNO 是一个基于 Go、C/cgo、PostgreSQL 与 Model Context Protocol (MCP) 的主机执行服务。它提供受 OAuth 保护的文件、服务、Shell、并行任务和数据库工具。
 
 > **安全警告：** 这是高权限远程执行服务，不是沙箱。当前实现要求以 root 身份运行；`execute_shell`、`execute_parallel` 和 `database_query` 可以执行破坏性操作。只应部署在可信主机上，并只授权可信用户和客户端。不要直接暴露未经过 TLS 反向代理保护的监听端口。

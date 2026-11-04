@@ -30,6 +30,12 @@ KERNO 是一个基于 Go、C/cgo、PostgreSQL 与 Model Context Protocol (MCP) �
 | `execute_shell` | `command`、可选 `timeout_seconds`（默认 30，范围 1–300） | 通过系统 Shell 执行命令，返回退出码、标准输出和标准错误；拥有服务运行账户的系统权限 |
 | `execute_parallel` | `tasks`（2–32 个独立任务）、可选 `max_parallel`（默认 8，最大 8） | 并行运行独立 Shell 任务；任务须使用不同工作目录，同一 Git 仓库须使用独立 worktree；包含超时、输出限制、清理和审计 |
 | `database_query` | `sql`、可选 `database`、可选 `max_rows`（默认 100，范围 1–500） | 执行单条 PostgreSQL 语句，包括查询、增删改、DDL 和数据库管理操作；数据库角色权限决定实际影响范围 |
+| `remote_target_create` | `name`、`host`、`port`、`username`、`host_key` | 登记远端 SSH 目标；必须提交经独立可信渠道核验的 Host 公钥 |
+| `remote_target_list` | 无 | 列出当前 OAuth 用户登记的 SSH 目标 |
+| `remote_target_delete` | `target_id` | 删除目标及其关联凭证 |
+| `remote_credential_create` | `target_id`、`name`、`private_key`、可选 `passphrase` | 保存 SSH 私钥；数据库明文存储，创建响应不返回密钥 |
+| `remote_credential_read` | `credential_id` | 读取完整 SSH 私钥和 passphrase 明文；调用写入审计 |
+| `remote_ssh_exec` | `target_id`、`credential_id`、`command`、可选 `timeout_seconds` | 通过固定 Host Key 校验执行远端命令；命令最长 16 KiB、超时 1–300 秒、每路输出最多 1 MiB |
 
 ### 并行执行约束
 

@@ -733,6 +733,13 @@ func randomToken(n int) (string, error) {
 }
 func hashToken(v string) string      { sum := sha256.Sum256([]byte(v)); return hex.EncodeToString(sum[:]) }
 func constantEqual(a, b string) bool { return hmac.Equal([]byte(a), []byte(b)) }
+func authorizationScopes(requested string, registered []string) []string {
+	if strings.TrimSpace(requested) == "" {
+		return append([]string(nil), registered...)
+	}
+	return strings.Fields(requested)
+}
+
 func scopeSubset(requested, allowed []string) bool {
 	if len(requested) == 0 {
 		return false

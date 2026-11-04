@@ -187,6 +187,15 @@ func pinnedHostKeyCallback(expected ssh.PublicKey) ssh.HostKeyCallback {
 	}
 }
 
+// pinnedHostKeyAlgorithms prevents SSH negotiation from selecting a different
+// host-key type before the pinned-key callback can verify the expected key.
+func pinnedHostKeyAlgorithms(key ssh.PublicKey) []string {
+	if key.Type() == ssh.KeyAlgoRSA {
+		return []string{ssh.KeyAlgoRSASHA512, ssh.KeyAlgoRSASHA256}
+	}
+	return []string{key.Type()}
+}
+
 type ExecResult struct {
 	TargetID     string `json:"target_id"`
 	CredentialID string `json:"credential_id"`
@@ -269,7 +278,7 @@ func (s *Store) Execute(ctx context.Context, actor Actor, targetID, credentialID
 		}
 	}()
 	defer close(watchDone)
-	cfg := &ssh.ClientConfig{User: username, Auth: []ssh.AuthMethod{ssh.PublicKeys(signer)}, HostKeyCallback: pinnedHostKeyCallback(key), Timeout: 8 * time.Second}
+	cfg := &ssh.ClientConfig{User: username, Auth: []ssh.AuthMethod{ssh.PublicKeys(signer)}, HostKeyCallback: pinnedHostKeyCallback(key), HostKeyAlgorithms: pinnedHostKeyAlgorithms(key), Timeout: 8 * time.Second}
 	started := time.Now()
 	cc, chans, reqs, err := ssh.NewClientConn(conn, address, cfg)
 	if err != nil {

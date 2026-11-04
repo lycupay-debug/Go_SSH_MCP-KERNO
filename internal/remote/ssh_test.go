@@ -70,6 +70,14 @@ func TestPinnedHostKeyCallback(t *testing.T) {
 	}
 }
 
+func TestPinnedHostKeyAlgorithms(t *testing.T) {
+	_, _, expected := testSSHKey(t)
+	got := pinnedHostKeyAlgorithms(expected)
+	if len(got) != 1 || got[0] != expected.Type() {
+		t.Fatalf("expected only pinned key algorithm %q, got %v", expected.Type(), got)
+	}
+}
+
 func TestCappedBuffer(t *testing.T) {
 	w := &cappedBuffer{limit: 4}
 	if n, err := w.Write([]byte("abcdef")); err != nil || n != 6 {

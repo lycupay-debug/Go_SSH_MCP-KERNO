@@ -13,7 +13,7 @@ This guide applies to the currently tested platform only: FreeBSD 15.x amd64. De
 ## Install from a source checkout
 
 ```sh
-git clone --branch v0.1.0 --depth 1 https://github.com/lycupay-debug/Go_SSH_MCP-KERNO.git
+git clone --branch v0.1.1 --depth 1 https://github.com/lycupay-debug/Go_SSH_MCP-KERNO.git
 cd Go_SSH_MCP-KERNO
 sudo sh scripts/install.sh
 ```

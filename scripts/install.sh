@@ -26,8 +26,8 @@ esac
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." 2>/dev/null && pwd || true)
 if [ -z "$SCRIPT_DIR" ] || [ ! -f "$SCRIPT_DIR/go.mod" ]; then
-  [ -n "$VERSION" ] || { ask "Release tag to install (example: v0.1.0): "; VERSION=$REPLY; }
-  case "$VERSION" in v[0-9]*.[0-9]*.[0-9]*) ;; *) fail "Use an explicit release tag such as v0.1.0; floating branch installs are disabled." ;; esac
+  [ -n "$VERSION" ] || { ask "Release tag to install (example: v0.1.1): "; VERSION=$REPLY; }
+  case "$VERSION" in v[0-9]*.[0-9]*.[0-9]*) ;; *) fail "Use an explicit release tag such as v0.1.1; floating branch installs are disabled." ;; esac
   TMP_ROOT=$(mktemp -d /tmp/kerno-install.XXXXXX)
   ARCHIVE="$TMP_ROOT/kerno-source.tar.gz"
   SUMS="$TMP_ROOT/SHA256SUMS"

@@ -19,6 +19,10 @@ A passing compile is necessary but not sufficient for deployment.
 - [ ] Per-task timeout (1–300 seconds), output cap, process-group cleanup, restricted task logs and audit records are verified.
 - [ ] Required/optional arguments, defaults, schema bounds, result shapes and errors are verified.
 - [ ] `get_system_info` identifies the Go/C runtime.
+- [ ] Remote SSH tools require `remote:ssh:manage`; target and credential ownership are checked on every operation.
+- [ ] Remote credential listing never returns private key material or passphrases.
+- [ ] Each target has at most one enabled default credential; concurrent default changes preserve the unique-default invariant.
+- [ ] `remote_ssh_exec` uses the default credential when omitted and validates explicit credential overrides against the target and owner.
 - [ ] File write, move and delete tests cover symlinks, permissions, overwrite behavior, recursive deletion and failure cases.
 
 ## 3. Runtime and platform

@@ -34,8 +34,10 @@ KERNO 是一个基于 Go、C/cgo、PostgreSQL 与 Model Context Protocol (MCP) �
 | `remote_target_list` | 无 | 列出当前 OAuth 用户登记的 SSH 目标 |
 | `remote_target_delete` | `target_id` | 删除目标及其关联凭证 |
 | `remote_credential_create` | `target_id`、`name`、`private_key`、可选 `passphrase` | 保存 SSH 私钥；数据库明文存储，创建响应不返回密钥 |
+| `remote_credential_list` | `target_id` | 列出凭证 ID、名称、指纹、启用状态和默认状态，不返回私钥或口令 |
+| `remote_credential_set_default` | `target_id`、`credential_id` | 原子切换目标默认凭证；目标下最多允许一个默认凭证 |
 | `remote_credential_read` | `credential_id` | 读取完整 SSH 私钥和 passphrase 明文；调用写入审计 |
-| `remote_ssh_exec` | `target_id`、`credential_id`、`command`、可选 `timeout_seconds` | 通过固定 Host Key 校验执行远端命令；命令最长 16 KiB、超时 1–300 秒、每路输出最多 1 MiB |
+| `remote_ssh_exec` | `target_id`、可选 `credential_id`、`command`、可选 `timeout_seconds` | 默认使用目标默认凭证；显式 credential_id 可临时覆盖。固定 Host Key 校验，命令最长 16 KiB、超时 1–300 秒、每路输出最多 1 MiB |
 
 ### 并行执行约束
 
@@ -102,10 +104,11 @@ GO_SSH_MCP_CONFIG=/usr/local/etc/kerno.conf \
 - `offline_access`：用于请求刷新令牌的长期访问能力；客户端是否使用它取决于客户端实现和授权请求。
 - `remote:ssh:manage`：管理当前 OAuth 用户登记的远端 SSH 目标和凭证，并执行远端 SSH 命令。
 
-远端 SSH 功能需要先应用 `migrations/002_remote_ssh.sql`。该迁移会创建 `remote` schema、目标、凭证和审计表；请先确认 `DATABASE_URL` 指向预期数据库，并使用具备建表权限的数据库角色执行：
+远端 SSH 功能需要按顺序应用 `migrations/002_remote_ssh.sql` 和 `migrations/003_remote_ssh_default_credential.sql`。第二个迁移为每个目标建立默认凭证约束，并为已有目标选择最早创建的启用凭证作为默认值。请先确认 `DATABASE_URL` 指向预期数据库，并使用具备建表权限的数据库角色执行：
 
 ```sh
 psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f migrations/002_remote_ssh.sql
+psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f migrations/003_remote_ssh_default_credential.sql
 ```
 
 远端 SSH 私钥和可选 passphrase 按产品要求以明文保存在 PostgreSQL。拥有该数据库访问权限、数据库备份访问权限或本机高权限工具权限的操作者，可能读取这些凭证。必须限制数据库、备份和日志访问，并在泄露时轮换 SSH 密钥。目标地址允许由操作者指定任意主机名/IP，因此远端连接也受 KERNO 主机的网络可达范围影响。

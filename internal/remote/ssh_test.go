@@ -1,9 +1,12 @@
+// Package remote unit tests cover host-key pinning, key parsing, and bounded output.
 package remote
 
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"encoding/pem"
+	"strings"
 	"testing"
 
 	"golang.org/x/crypto/ssh"
@@ -85,5 +88,22 @@ func TestCappedBuffer(t *testing.T) {
 	}
 	if w.String() != "abcd" || !w.truncated {
 		t.Fatalf("unexpected capped output: %q truncated=%v", w.String(), w.truncated)
+	}
+}
+
+func TestCredentialInfoSerializationExcludesSecrets(t *testing.T) {
+	encoded, err := json.Marshal(CredentialInfo{
+		ID: "credential-id", TargetID: "target-id", Name: "primary",
+		Fingerprint: "SHA256:test", Enabled: true, Default: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(encoded)
+	if strings.Contains(text, "private_key") || strings.Contains(text, "passphrase") {
+		t.Fatalf("credential metadata response must not expose secret fields: %s", text)
+	}
+	if !strings.Contains(text, `"default":true`) {
+		t.Fatalf("default credential state missing from metadata response: %s", text)
 	}
 }

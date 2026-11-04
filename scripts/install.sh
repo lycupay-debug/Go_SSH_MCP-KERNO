@@ -155,7 +155,10 @@ env['PGUSER']=urllib.parse.unquote(u.username or '')
 if u.password is not None: env['PGPASSWORD']=urllib.parse.unquote(u.password)
 for k,v in urllib.parse.parse_qsl(u.query,keep_blank_values=True):
     if k=='sslmode': env['PGSSLMODE']=v
-subprocess.run(['psql','-X','-v','ON_ERROR_STOP=1','-f','migrations/001_oauth.sql'],env=env,check=True)
+from pathlib import Path
+for migration in sorted(Path('migrations').glob('*.sql')):
+    print(f'Applying database migration: {migration.name}')
+    subprocess.run(['psql','-X','-v','ON_ERROR_STOP=1','-f',str(migration)],env=env,check=True)
 PY
 
 GO_SSH_MCP_CONFIG=/usr/local/etc/kerno.conf /opt/kerno/bin/go-ssh-mcp-admin-user "$OAUTH_USER"

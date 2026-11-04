@@ -24,7 +24,7 @@ build-c-candidate:
 test: build-c-candidate
 	C_EXECUTOR_TEST_PATH="$$(pwd)/bin/host-executor-candidate" $(GO) test -count=1 ./...
 
-# Requires a disposable PostgreSQL database initialized with migrations/001_oauth.sql.
+# Requires a disposable PostgreSQL database initialized with migrations/001_oauth.sql, 002_remote_ssh.sql and 003_remote_ssh_default_credential.sql.
 test-integration: build-c-candidate
 	@test -n "$(GO_SSH_MCP_TEST_DATABASE_URL)" || (echo "GO_SSH_MCP_TEST_DATABASE_URL is required" >&2; exit 2)
 	C_EXECUTOR_TEST_PATH="$$(pwd)/bin/host-executor-candidate" $(GO) test -count=1 -v ./...

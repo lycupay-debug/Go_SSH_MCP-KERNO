@@ -245,10 +245,7 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, http.StatusBadRequest, "invalid_request", "redirect_uri does not exactly match registered metadata")
 		return
 	}
-	scopes := strings.Fields(q.Get("scope"))
-	if len(scopes) == 0 {
-		scopes = []string{scopeName}
-	}
+	scopes := authorizationScopes(q.Get("scope"), registeredScopes)
 	if !scopeSubset(scopes, []string{scopeName, "offline_access", remoteSSHScope}) || !scopeSubset(scopes, registeredScopes) {
 		redirectWithError(w, redirectURI, "invalid_scope", q.Get("state"), s.Issuer)
 		return

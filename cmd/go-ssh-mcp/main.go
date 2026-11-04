@@ -161,6 +161,10 @@ func main() {
 	}
 	application := &app{runner: runner, remote: &remote.Store{Pool: pool}, logger: logger, auditPath: cfg.AuditLogPath}
 	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "KERNO MCP", Version: "1.0.0"}, &mcp.ServerOptions{Instructions: "管理主机的 KERNO MCP 服务。当前支持平台为 FreeBSD；工具名称、参数、默认值及返回结构与兼容实现保持一致。底层操作由 C 执行器完成，MCP 接口由 Go SDK 提供。所有请求均需有效 OAuth Bearer Token。execute_parallel 在服务进程内部使用有界并发执行独立任务，最大并行数为 8；每个任务必须使用独立工作目录，Git 仓库任务必须使用独立 worktree。"})
+	resourceMetadataURL, err := protectedResourceMetadataURL(cfg.ResourceURL)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	mcp.AddTool(mcpServer, &mcp.Tool{Name: "get_system_info", Description: "获取 FreeBSD 版本、主机名、运行时间、磁盘、内存及运行时信息。"}, func(ctx context.Context, req *mcp.CallToolRequest, in emptyInput) (*mcp.CallToolResult, map[string]any, error) {
 		out, err := application.call(ctx, "system.info", map[string]any{}, 30, actorFromContext(ctx))
@@ -340,9 +344,12 @@ func main() {
 	})
 
 	// Remote SSH tools are isolated from execute_shell and require an explicit OAuth scope.
-	mcp.AddTool(mcpServer, &mcp.Tool{Name: "remote_target_create", Description: "登记远端 SSH 目标。必须提交通过可信独立渠道核验的 SSH Host 公钥；目标归属于当前 OAuth 用户。"}, func(ctx context.Context, req *mcp.CallToolRequest, in remoteTargetInput) (*mcp.CallToolResult, remote.Target, error) {
+	mcp.AddTool(mcpServer, &mcp.Tool{Meta: remoteToolSecurityMeta(), Name: "remote_target_create", Description: "登记远端 SSH 目标。必须提交通过可信独立渠道核验的 SSH Host 公钥；目标归属于当前 OAuth 用户。"}, func(ctx context.Context, req *mcp.CallToolRequest, in remoteTargetInput) (*mcp.CallToolResult, remote.Target, error) {
 		actor, err := remoteActor(ctx)
 		if err != nil {
+			if errors.Is(err, errRemoteScopeRequired) {
+				return remoteScopeChallengeResult(resourceMetadataURL), remote.Target{}, nil
+			}
 			return nil, remote.Target{}, err
 		}
 		out, err := application.remote.CreateTarget(ctx, actor, remote.TargetInput{Name: in.Name, Host: in.Host, Port: in.Port, Username: in.Username, HostKey: in.HostKey})
@@ -355,17 +362,23 @@ func main() {
 		}
 		return nil, out, err
 	})
-	mcp.AddTool(mcpServer, &mcp.Tool{Name: "remote_target_list", Description: "列出当前 OAuth 用户登记的远端 SSH 目标。"}, func(ctx context.Context, req *mcp.CallToolRequest, in emptyInput) (*mcp.CallToolResult, []remote.Target, error) {
+	mcp.AddTool(mcpServer, &mcp.Tool{Meta: remoteToolSecurityMeta(), Name: "remote_target_list", Description: "列出当前 OAuth 用户登记的远端 SSH 目标。"}, func(ctx context.Context, req *mcp.CallToolRequest, in emptyInput) (*mcp.CallToolResult, []remote.Target, error) {
 		actor, err := remoteActor(ctx)
 		if err != nil {
+			if errors.Is(err, errRemoteScopeRequired) {
+				return remoteScopeChallengeResult(resourceMetadataURL), nil, nil
+			}
 			return nil, nil, err
 		}
 		out, err := application.remote.ListTargets(ctx, actor)
 		return nil, out, err
 	})
-	mcp.AddTool(mcpServer, &mcp.Tool{Name: "remote_target_delete", Description: "删除当前 OAuth 用户拥有的远端 SSH 目标及其 SSH 凭证。"}, func(ctx context.Context, req *mcp.CallToolRequest, in remoteTargetIDInput) (*mcp.CallToolResult, map[string]any, error) {
+	mcp.AddTool(mcpServer, &mcp.Tool{Meta: remoteToolSecurityMeta(), Name: "remote_target_delete", Description: "删除当前 OAuth 用户拥有的远端 SSH 目标及其 SSH 凭证。"}, func(ctx context.Context, req *mcp.CallToolRequest, in remoteTargetIDInput) (*mcp.CallToolResult, map[string]any, error) {
 		actor, err := remoteActor(ctx)
 		if err != nil {
+			if errors.Is(err, errRemoteScopeRequired) {
+				return remoteScopeChallengeResult(resourceMetadataURL), nil, nil
+			}
 			return nil, nil, err
 		}
 		err = application.remote.DeleteTarget(ctx, actor, in.TargetID)
@@ -381,9 +394,12 @@ func main() {
 		}
 		return nil, map[string]any{"deleted": true, "target_id": in.TargetID}, nil
 	})
-	mcp.AddTool(mcpServer, &mcp.Tool{Name: "remote_credential_create", Description: "为当前用户的远端目标保存 SSH 私钥。私钥原文写入 PostgreSQL，响应仅返回凭证元数据。"}, func(ctx context.Context, req *mcp.CallToolRequest, in remoteCredentialInput) (*mcp.CallToolResult, remote.Credential, error) {
+	mcp.AddTool(mcpServer, &mcp.Tool{Meta: remoteToolSecurityMeta(), Name: "remote_credential_create", Description: "为当前用户的远端目标保存 SSH 私钥。私钥原文写入 PostgreSQL，响应仅返回凭证元数据。"}, func(ctx context.Context, req *mcp.CallToolRequest, in remoteCredentialInput) (*mcp.CallToolResult, remote.Credential, error) {
 		actor, err := remoteActor(ctx)
 		if err != nil {
+			if errors.Is(err, errRemoteScopeRequired) {
+				return remoteScopeChallengeResult(resourceMetadataURL), remote.Credential{}, nil
+			}
 			return nil, remote.Credential{}, err
 		}
 		out, err := application.remote.SaveCredential(ctx, actor, in.TargetID, in.Name, in.PrivateKey, in.Passphrase)
@@ -398,9 +414,12 @@ func main() {
 		out.Passphrase = ""
 		return nil, out, err
 	})
-	mcp.AddTool(mcpServer, &mcp.Tool{Name: "remote_credential_read", Description: "读取当前用户拥有的 SSH 凭证，包含 PostgreSQL 中保存的私钥原文。调用需要 remote:ssh:manage 权限并写入审计。"}, func(ctx context.Context, req *mcp.CallToolRequest, in remoteCredentialIDInput) (*mcp.CallToolResult, remote.Credential, error) {
+	mcp.AddTool(mcpServer, &mcp.Tool{Meta: remoteToolSecurityMeta(), Name: "remote_credential_read", Description: "读取当前用户拥有的 SSH 凭证，包含 PostgreSQL 中保存的私钥原文。调用需要 remote:ssh:manage 权限并写入审计。"}, func(ctx context.Context, req *mcp.CallToolRequest, in remoteCredentialIDInput) (*mcp.CallToolResult, remote.Credential, error) {
 		actor, err := remoteActor(ctx)
 		if err != nil {
+			if errors.Is(err, errRemoteScopeRequired) {
+				return remoteScopeChallengeResult(resourceMetadataURL), remote.Credential{}, nil
+			}
 			return nil, remote.Credential{}, err
 		}
 		out, err := application.remote.ReadCredential(ctx, actor, in.CredentialID)
@@ -413,9 +432,12 @@ func main() {
 		}
 		return nil, out, err
 	})
-	mcp.AddTool(mcpServer, &mcp.Tool{Name: "remote_ssh_exec", Description: "通过已登记目标和 SSH 凭证执行远端命令。严格校验固定 Host Key；命令最长 16 KiB、超时最长 300 秒、输出每流最多 1 MiB。"}, func(ctx context.Context, req *mcp.CallToolRequest, in remoteExecInput) (*mcp.CallToolResult, remote.ExecResult, error) {
+	mcp.AddTool(mcpServer, &mcp.Tool{Meta: remoteToolSecurityMeta(), Name: "remote_ssh_exec", Description: "通过已登记目标和 SSH 凭证执行远端命令。严格校验固定 Host Key；命令最长 16 KiB、超时最长 300 秒、输出每流最多 1 MiB。"}, func(ctx context.Context, req *mcp.CallToolRequest, in remoteExecInput) (*mcp.CallToolResult, remote.ExecResult, error) {
 		actor, err := remoteActor(ctx)
 		if err != nil {
+			if errors.Is(err, errRemoteScopeRequired) {
+				return remoteScopeChallengeResult(resourceMetadataURL), remote.ExecResult{}, nil
+			}
 			return nil, remote.ExecResult{}, err
 		}
 		timeout := in.TimeoutSeconds
@@ -438,12 +460,6 @@ func main() {
 	})
 
 	handler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server { return mcpServer }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true, DisableLocalhostProtection: true})
-	resourceMetadataURL := ""
-	if resourceURL, parseErr := url.Parse(cfg.ResourceURL); parseErr == nil && resourceURL.Scheme != "" && resourceURL.Host != "" {
-		resourceMetadataURL = resourceURL.Scheme + "://" + resourceURL.Host + "/.well-known/oauth-protected-resource" + strings.TrimRight(resourceURL.EscapedPath(), "/")
-	} else {
-		log.Fatal("RESOURCE_URL must be an absolute URL")
-	}
 	authHandler := auth.RequireBearerToken(tokenVerifier(pool, cfg.ResourceURL), &auth.RequireBearerTokenOptions{ResourceMetadataURL: resourceMetadataURL, Scopes: []string{"go-ssh-mcp"}})
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", authHandler(handler))
@@ -647,8 +663,41 @@ func writeAudit(path string, entry map[string]any) error {
 	return nil
 }
 
+var errRemoteScopeRequired = errors.New("OAuth token requires remote:ssh:manage scope")
+
+func protectedResourceMetadataURL(resourceURL string) (string, error) {
+	parsed, err := url.Parse(resourceURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", errors.New("RESOURCE_URL must be an absolute URL")
+	}
+	return parsed.Scheme + "://" + parsed.Host + "/.well-known/oauth-protected-resource" + strings.TrimRight(parsed.EscapedPath(), "/"), nil
+}
+
+func remoteToolSecurityMeta() mcp.Meta {
+	return mcp.Meta{
+		"securitySchemes": []any{
+			map[string]any{"type": "oauth2", "scopes": []string{"go-ssh-mcp", "remote:ssh:manage"}},
+		},
+	}
+}
+
+func remoteScopeChallengeResult(resourceMetadataURL string) *mcp.CallToolResult {
+	challenge := fmt.Sprintf(
+		`Bearer resource_metadata=%q, error="insufficient_scope", scope="go-ssh-mcp remote:ssh:manage", error_description="This remote SSH tool requires the remote:ssh:manage OAuth scope"`,
+		resourceMetadataURL,
+	)
+	return &mcp.CallToolResult{
+		Meta:    mcp.Meta{"mcp/www_authenticate": []string{challenge}},
+		Content: []mcp.Content{&mcp.TextContent{Text: "OAuth authorization must be upgraded to include remote:ssh:manage."}},
+		IsError: true,
+	}
+}
+
 func remoteActor(ctx context.Context) (remote.Actor, error) {
-	ti := auth.TokenInfoFromContext(ctx)
+	return remoteActorFromTokenInfo(auth.TokenInfoFromContext(ctx))
+}
+
+func remoteActorFromTokenInfo(ti *auth.TokenInfo) (remote.Actor, error) {
 	if ti == nil || ti.UserID == "" {
 		return remote.Actor{}, errors.New("authenticated OAuth user is required")
 	}
@@ -660,7 +709,7 @@ func remoteActor(ctx context.Context) (remote.Actor, error) {
 		}
 	}
 	if !allowed {
-		return remote.Actor{}, errors.New("OAuth token requires remote:ssh:manage scope")
+		return remote.Actor{}, errRemoteScopeRequired
 	}
 	clientID, _ := ti.Extra["client_id"].(string)
 	return remote.Actor{UserID: ti.UserID, ClientID: clientID}, nil

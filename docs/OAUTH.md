@@ -32,6 +32,10 @@ Before production use, verify:
 
 A passing unit test or metadata response alone is not end-to-end OAuth acceptance. Account and plan restrictions imposed by an external client cannot be overridden by server-side changes.
 
+## Remote SSH tool-level OAuth step-up
+
+The `/mcp` HTTP middleware continues to require only the base `go-ssh-mcp` scope so existing local host-management tools and existing base-scope tokens remain usable. Each of the six remote SSH tools separately advertises an OAuth 2.0 `securitySchemes` entry in its MCP tool `_meta`, requiring `go-ssh-mcp` and `remote:ssh:manage`. If a valid base-scope token calls one of those tools without the additional scope, the handler returns an MCP error result with `isError: true` and `_meta["mcp/www_authenticate"]` containing an `insufficient_scope` challenge, the protected-resource metadata URL, and both required scopes. This is a tool-level OAuth step-up response; it does not broaden the HTTP middleware requirements or change the behavior of local tools.
+
 ## Remote SSH scope and trust model
 
 The `remote:ssh:manage` scope enables the remote SSH target, credential and execution tools. Clients must allow this scope in their registration metadata. At authorization, an explicitly supplied `scope` parameter is honored as-is; when the parameter is omitted or blank, KERNO now uses the client's registered scope allow-list (including `remote:ssh:manage` when registered). The resulting scope list is still shown on the consent page and is granted only after the user explicitly approves it. This preserves least privilege when a client explicitly asks for only `go-ssh-mcp`, while allowing clients that omit `scope` to receive the scopes they registered as eligible for consent. It is independent of the existing `go-ssh-mcp` scope; the local host-management tools retain their existing behavior.

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -19,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lycupay-debug/Go_SSH_MCP-KERNO/internal/executor"
 	"github.com/modelcontextprotocol/go-sdk/auth"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -390,5 +392,91 @@ func TestMovePathOverwritesExistingFileLikePython(t *testing.T) {
 	}
 	if _, err := os.Stat(src); !os.IsNotExist(err) {
 		t.Fatalf("source should be moved, stat err=%v", err)
+	}
+}
+
+func TestRemoteToolSecurityMetadata(t *testing.T) {
+	meta := remoteToolSecurityMeta()
+	schemes, ok := meta["securitySchemes"].([]any)
+	if !ok || len(schemes) != 1 {
+		t.Fatalf("securitySchemes metadata has wrong shape: %#v", meta)
+	}
+	scheme, ok := schemes[0].(map[string]any)
+	if !ok || scheme["type"] != "oauth2" {
+		t.Fatalf("OAuth security scheme missing: %#v", schemes[0])
+	}
+	scopes, ok := scheme["scopes"].([]string)
+	if !ok || len(scopes) != 2 || scopes[0] != "go-ssh-mcp" || scopes[1] != "remote:ssh:manage" {
+		t.Fatalf("remote tool scopes = %#v", scheme["scopes"])
+	}
+	encoded, err := json.Marshal(&struct {
+		mcp.Meta `json:"_meta,omitempty"`
+	}{Meta: meta})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"_meta":{"securitySchemes"`) {
+		t.Fatalf("security metadata did not serialize under _meta: %s", encoded)
+	}
+}
+
+func TestRemoteScopeChallengeResult(t *testing.T) {
+	metadataURL := "https://example.invalid/.well-known/oauth-protected-resource/mcp"
+	result := remoteScopeChallengeResult(metadataURL)
+	if result == nil || !result.IsError {
+		t.Fatalf("expected error tool result: %#v", result)
+	}
+	challenges, ok := result.Meta["mcp/www_authenticate"].([]string)
+	if !ok || len(challenges) != 1 {
+		t.Fatalf("missing MCP WWW-Authenticate metadata: %#v", result.Meta)
+	}
+	for _, expected := range []string{metadataURL, `error="insufficient_scope"`, `scope="go-ssh-mcp remote:ssh:manage"`} {
+		if !strings.Contains(challenges[0], expected) {
+			t.Fatalf("challenge %q missing %q", challenges[0], expected)
+		}
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err = json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	meta, ok := decoded["_meta"].(map[string]any)
+	if !ok || meta["mcp/www_authenticate"] == nil {
+		t.Fatalf("challenge metadata not serialized: %s", encoded)
+	}
+}
+
+func TestRemoteActorScopeGate(t *testing.T) {
+	if _, err := remoteActorFromTokenInfo(nil); err == nil {
+		t.Fatal("missing token info must be rejected")
+	}
+	baseOnly := &auth.TokenInfo{UserID: "user-1", Scopes: []string{"go-ssh-mcp"}}
+	if _, err := remoteActorFromTokenInfo(baseOnly); !errors.Is(err, errRemoteScopeRequired) {
+		t.Fatalf("base-only token error = %v, want remote scope challenge sentinel", err)
+	}
+	full := &auth.TokenInfo{UserID: "user-1", Scopes: []string{"go-ssh-mcp", "remote:ssh:manage"}, Extra: map[string]any{"client_id": "client-1"}}
+	actor, err := remoteActorFromTokenInfo(full)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if actor.UserID != "user-1" || actor.ClientID != "client-1" {
+		t.Fatalf("unexpected actor: %#v", actor)
+	}
+}
+
+func TestProtectedResourceMetadataURL(t *testing.T) {
+	got, err := protectedResourceMetadataURL("https://example.invalid/mcp/v1/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "https://example.invalid/.well-known/oauth-protected-resource/mcp/v1"
+	if got != want {
+		t.Fatalf("metadata URL = %q, want %q", got, want)
+	}
+	if _, err = protectedResourceMetadataURL("/relative/path"); err == nil {
+		t.Fatal("relative resource URL must be rejected")
 	}
 }

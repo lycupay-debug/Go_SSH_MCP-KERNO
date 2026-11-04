@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -127,5 +128,47 @@ func TestAuthorizationScopes(t *testing.T) {
 	got = authorizationScopes(scopeName+" "+remoteSSHScope, registered)
 	if len(got) != 2 || got[0] != scopeName || got[1] != remoteSSHScope {
 		t.Fatalf("explicit multiple scopes were not preserved: %#v", got)
+	}
+}
+
+func TestAuthorizationErrorRedirectIncludesStateAndIssuer(t *testing.T) {
+	rr := httptest.NewRecorder()
+	redirectURI := "https://chatgpt.com/connector/oauth/test-callback?existing=preserved"
+	redirectWithError(rr, redirectURI, "invalid_scope", "state-123", "https://issuer.example")
+	if rr.Code != http.StatusFound {
+		t.Fatalf("status=%d, want %d", rr.Code, http.StatusFound)
+	}
+	target, err := url.Parse(rr.Header().Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := target.Query()
+	if q.Get("error") != "invalid_scope" || q.Get("state") != "state-123" || q.Get("iss") != "https://issuer.example" {
+		t.Fatalf("authorization error response missing OAuth parameters: %s", target.Redacted())
+	}
+	if q.Get("existing") != "preserved" {
+		t.Fatalf("existing redirect query parameter was lost: %s", target.Redacted())
+	}
+}
+
+func TestAuthorizationServerMetadataDoesNotSwitchExistingDCRRedirectMode(t *testing.T) {
+	s := New(nil, "https://issuer.example", "https://issuer.example/mcp", []byte(strings.Repeat("x", 64)))
+	rr := httptest.NewRecorder()
+	s.authorizationServerMetadata(rr, httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("metadata status=%d", rr.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if _, advertised := body["authorization_response_iss_parameter_supported"]; advertised {
+		t.Fatal("do not advertise RFC 9207 stable-redirect mode until existing DCR redirect URIs are migrated")
+	}
+}
+
+func TestAccessTokenTTLIs24Hours(t *testing.T) {
+	if got := int(accessTokenTTL.Seconds()); got != 86400 {
+		t.Fatalf("access token TTL=%d seconds, want 86400", got)
 	}
 }

@@ -9,10 +9,19 @@ KERNO exposes an OAuth-protected MCP Streamable HTTP endpoint. Deployment-specif
 - Dynamic Client Registration for public clients using `token_endpoint_auth_method=none` where required by the client.
 - Authorization Code grant with PKCE S256, state validation, exact redirect-URI matching and resource/audience binding.
 - Login and explicit consent screens with CSRF protection and secure, HttpOnly session cookies.
-- Short-lived opaque access tokens stored as hashes, refresh-token rotation and reuse detection.
+- 24-hour opaque access tokens stored as hashes, refresh-token rotation and reuse detection.
 - Token revocation, user/client disablement, expiry and scope checks.
 - Audit events must not include passwords, bearer tokens, authorization codes, cookies or full database URLs.
 - Unauthenticated MCP requests should return the expected protected-resource metadata challenge.
+- Successful authorization responses and OAuth errors redirected after exact redirect-URI validation must include both the original `state` and the authorization server `iss`.
+
+## Authorization callback compatibility
+
+KERNO adds `iss` to successful authorization-code redirects and to redirectable authorization errors (`invalid_scope`, `invalid_target`, and user denial). Errors raised before a client and its exact `redirect_uri` have been validated remain local HTTP errors and are not redirected.
+
+The authorization-server metadata intentionally does not advertise `authorization_response_iss_parameter_supported: true` yet. Existing ChatGPT DCR records use callback-ID-specific redirect URIs and KERNO enforces exact redirect-URI matching. Advertising RFC 9207 support changes the callback mode used by compatible clients; enable it only as part of a coordinated DCR redirect-URI migration after every success and redirectable error response is verified to include `iss`. Do not toggle this metadata flag independently of registered redirect URIs.
+
+The authorization-code exchange additionally validates the exact registered redirect URI, PKCE verifier, and resource indicator. A server-side `token.issued` audit event proves that the callback reached the token endpoint and the code exchange completed; it does not prove that the client subsequently persisted the connector or that its later MCP request succeeded.
 
 ## Database and signing key
 

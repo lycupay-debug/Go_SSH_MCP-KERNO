@@ -24,8 +24,11 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-const scopeName = "go-ssh-mcp"
-const remoteSSHScope = "remote:ssh:manage"
+const (
+	scopeName      = "go-ssh-mcp"
+	remoteSSHScope = "remote:ssh:manage"
+	accessTokenTTL = 24 * time.Hour
+)
 
 type Server struct {
 	Pool       *pgxpool.Pool
@@ -484,7 +487,7 @@ type tokenPair struct {
 }
 
 func (s *Server) issuePair(ctx context.Context, tx pgx.Tx, clientID, userID string, scopes []string, resource, familyID string) (tokenPair, error) {
-	pair := tokenPair{Expires: 900}
+	pair := tokenPair{Expires: int(accessTokenTTL.Seconds())}
 	var err error
 	pair.Access, err = randomToken(48)
 	if err != nil {
@@ -502,7 +505,7 @@ func (s *Server) issuePair(ctx context.Context, tx pgx.Tx, clientID, userID stri
 		}
 	}
 	_, err = tx.Exec(ctx, `INSERT INTO oauth.access_tokens(id,token_hash,client_id,user_id,scopes,resource,family_id,expires_at)
-		VALUES(gen_random_uuid(),$1,$2,$3,$4,$5,$6,now()+interval '15 minutes')`, hashToken(pair.Access), clientID, userID, scopes, resource, familyID)
+		VALUES(gen_random_uuid(),$1,$2,$3,$4,$5,$6,now()+interval '24 hours')`, hashToken(pair.Access), clientID, userID, scopes, resource, familyID)
 	if err != nil {
 		return pair, err
 	}

@@ -34,7 +34,7 @@ A passing unit test or metadata response alone is not end-to-end OAuth acceptanc
 
 ## Remote SSH scope and trust model
 
-The `remote:ssh:manage` scope enables the remote SSH target, credential and execution tools. Clients must request this scope at registration and authorization. It is independent of the existing `go-ssh-mcp` scope; the local host-management tools retain their existing behavior.
+The `remote:ssh:manage` scope enables the remote SSH target, credential and execution tools. Clients must allow this scope in their registration metadata. At authorization, an explicitly supplied `scope` parameter is honored as-is; when the parameter is omitted or blank, KERNO now uses the client's registered scope allow-list (including `remote:ssh:manage` when registered). The resulting scope list is still shown on the consent page and is granted only after the user explicitly approves it. This preserves least privilege when a client explicitly asks for only `go-ssh-mcp`, while allowing clients that omit `scope` to receive the scopes they registered as eligible for consent. It is independent of the existing `go-ssh-mcp` scope; the local host-management tools retain their existing behavior.
 
 KERNO is intended by default for a self-hosted instance operated by one trusted user. The `user_id` ownership checks organize targets and credentials and provide audit attribution; they are not a strong isolation boundary against another caller who can use the instance's existing root-level host tools or database access. Multi-user deployments require a separate authorization design and security review.
 

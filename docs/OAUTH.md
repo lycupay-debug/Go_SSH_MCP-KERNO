@@ -31,3 +31,11 @@ Before production use, verify:
 - An end-to-end authorization flow and authenticated MCP tool call through the intended HTTPS reverse proxy.
 
 A passing unit test or metadata response alone is not end-to-end OAuth acceptance. Account and plan restrictions imposed by an external client cannot be overridden by server-side changes.
+
+## Remote SSH scope and trust model
+
+The `remote:ssh:manage` scope enables the remote SSH target, credential and execution tools. Clients must request this scope at registration and authorization. It is independent of the existing `go-ssh-mcp` scope; the local host-management tools retain their existing behavior.
+
+KERNO is intended by default for a self-hosted instance operated by one trusted user. The `user_id` ownership checks organize targets and credentials and provide audit attribution; they are not a strong isolation boundary against another caller who can use the instance's existing root-level host tools or database access. Multi-user deployments require a separate authorization design and security review.
+
+Remote SSH private keys and optional passphrases are stored as plaintext in PostgreSQL by explicit product choice. Restrict database and backup access. Remote targets accept operator-supplied hostnames and IP addresses, so outbound SSH reachability follows the KERNO host's network access policy. Apply `migrations/002_remote_ssh.sql` to the intended database before using the remote SSH tools.

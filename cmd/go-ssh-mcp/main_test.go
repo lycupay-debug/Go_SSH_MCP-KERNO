@@ -68,6 +68,9 @@ func TestBearerTokenVerifierAndChallengeIntegration(t *testing.T) {
 	if err != nil || info == nil || info.UserID != userID {
 		t.Fatalf("valid token rejected: info=%#v err=%v", info, err)
 	}
+	if got, _ := info.Extra["client_id"].(string); got != clientID {
+		t.Fatalf("client id context=%q want %q", got, clientID)
+	}
 	if _, err = verifier(ctx, "not-a-valid-token", httptest.NewRequest(http.MethodGet, "https://example.invalid/mcp", nil)); err == nil {
 		t.Fatal("invalid token accepted")
 	}

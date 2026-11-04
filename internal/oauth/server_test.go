@@ -88,17 +88,20 @@ func TestOAuthMetadataAdvertisesRefreshScope(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s missing scopes_supported: %#v", path, body)
 		}
-		found := false
+		foundOffline, foundRemote := false, false
 		for _, scope := range scopes {
 			if scope == "offline_access" {
-				found = true
+				foundOffline = true
+			}
+			if scope == remoteSSHScope {
+				foundRemote = true
 			}
 		}
-		if !found {
-			t.Fatalf("%s does not advertise offline_access: %#v", path, scopes)
+		if !foundOffline || !foundRemote {
+			t.Fatalf("%s missing expected scopes: %#v", path, scopes)
 		}
 	}
-	if !scopeSubset([]string{scopeName, "offline_access"}, []string{scopeName, "offline_access"}) {
-		t.Fatal("go-ssh-mcp plus offline_access should be accepted")
+	if !scopeSubset([]string{scopeName, "offline_access", remoteSSHScope}, []string{scopeName, "offline_access", remoteSSHScope}) {
+		t.Fatal("go-ssh-mcp, offline_access and remote SSH scope should be accepted")
 	}
 }

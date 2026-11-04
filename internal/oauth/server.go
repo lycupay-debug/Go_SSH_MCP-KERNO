@@ -25,6 +25,7 @@ import (
 )
 
 const scopeName = "go-ssh-mcp"
+const remoteSSHScope = "remote:ssh:manage"
 
 type Server struct {
 	Pool       *pgxpool.Pool
@@ -89,7 +90,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 
 func (s *Server) protectedResourceMetadata(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	writeJSON(w, http.StatusOK, map[string]any{"resource": s.Resource, "authorization_servers": []string{s.Issuer}, "scopes_supported": []string{scopeName, "offline_access"}, "bearer_methods_supported": []string{"header"}})
+	writeJSON(w, http.StatusOK, map[string]any{"resource": s.Resource, "authorization_servers": []string{s.Issuer}, "scopes_supported": []string{scopeName, "offline_access", remoteSSHScope}, "bearer_methods_supported": []string{"header"}})
 }
 func (s *Server) authorizationServerMetadata(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -98,7 +99,7 @@ func (s *Server) authorizationServerMetadata(w http.ResponseWriter, r *http.Requ
 		"registration_endpoint": s.endpoint("/register"), "revocation_endpoint": s.endpoint("/revoke"),
 		"response_types_supported": []string{"code"}, "grant_types_supported": []string{"authorization_code", "refresh_token"},
 		"code_challenge_methods_supported": []string{"S256"}, "token_endpoint_auth_methods_supported": []string{"none"},
-		"scopes_supported": []string{scopeName, "offline_access"},
+		"scopes_supported": []string{scopeName, "offline_access", remoteSSHScope},
 	})
 }
 
@@ -140,7 +141,7 @@ func (s *Server) registerClient(w http.ResponseWriter, r *http.Request) {
 	if in.Scope == "" {
 		in.Scope = scopeName
 	}
-	if !scopeSubset(strings.Fields(in.Scope), []string{scopeName, "offline_access"}) {
+	if !scopeSubset(strings.Fields(in.Scope), []string{scopeName, "offline_access", remoteSSHScope}) {
 		oauthError(w, http.StatusBadRequest, "invalid_client_metadata", "Unsupported scope")
 		return
 	}
@@ -229,6 +230,10 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 	var redirects []string
 	b, _ := json.Marshal(meta["redirect_uris"])
 	_ = json.Unmarshal(b, &redirects)
+	registeredScopes := strings.Fields(fmt.Sprint(meta["scope"]))
+	if len(registeredScopes) == 0 {
+		registeredScopes = []string{scopeName}
+	}
 	matched := false
 	for _, u := range redirects {
 		if u == redirectURI {
@@ -244,7 +249,7 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 	if len(scopes) == 0 {
 		scopes = []string{scopeName}
 	}
-	if !scopeSubset(scopes, []string{scopeName, "offline_access"}) {
+	if !scopeSubset(scopes, []string{scopeName, "offline_access", remoteSSHScope}) || !scopeSubset(scopes, registeredScopes) {
 		redirectWithError(w, redirectURI, "invalid_scope", q.Get("state"), s.Issuer)
 		return
 	}

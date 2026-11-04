@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lycupay-debug/Go_SSH_MCP-KERNO/internal/executor"
+	"github.com/lycupay-debug/Go_SSH_MCP-KERNO/internal/remote"
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"golang.org/x/crypto/bcrypt"
@@ -478,5 +479,43 @@ func TestProtectedResourceMetadataURL(t *testing.T) {
 	}
 	if _, err = protectedResourceMetadataURL("/relative/path"); err == nil {
 		t.Fatal("relative resource URL must be rejected")
+	}
+}
+
+func TestSDKToolLevelOAuthStepUpRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	server := mcp.NewServer(&mcp.Implementation{Name: "test-server", Version: "1"}, nil)
+	mcp.AddTool(server, &mcp.Tool{Meta: remoteToolSecurityMeta(), Name: "remote_target_list"}, func(context.Context, *mcp.CallToolRequest, emptyInput) (*mcp.CallToolResult, *remote.Target, error) {
+		return remoteScopeChallengeResult("https://example.invalid/.well-known/oauth-protected-resource/mcp"), nil, nil
+	})
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "1"}, nil)
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverSession.Close()
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientSession.Close()
+
+	listed, err := clientSession.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Tools) != 1 || listed.Tools[0].Meta["securitySchemes"] == nil {
+		t.Fatalf("tool security scheme missing from tools/list: %#v", listed.Tools)
+	}
+	result, err := clientSession.CallTool(ctx, &mcp.CallToolParams{Name: "remote_target_list"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Fatalf("scope challenge must be an MCP tool error: %#v", result)
+	}
+	if result.Meta["mcp/www_authenticate"] == nil {
+		t.Fatalf("scope challenge metadata lost by SDK wrapper: %#v", result)
 	}
 }

@@ -344,13 +344,13 @@ func main() {
 	})
 
 	// Remote SSH tools are isolated from execute_shell and require an explicit OAuth scope.
-	mcp.AddTool(mcpServer, &mcp.Tool{Meta: remoteToolSecurityMeta(), Name: "remote_target_create", Description: "登记远端 SSH 目标。必须提交通过可信独立渠道核验的 SSH Host 公钥；目标归属于当前 OAuth 用户。"}, func(ctx context.Context, req *mcp.CallToolRequest, in remoteTargetInput) (*mcp.CallToolResult, remote.Target, error) {
+	mcp.AddTool(mcpServer, &mcp.Tool{Meta: remoteToolSecurityMeta(), Name: "remote_target_create", Description: "登记远端 SSH 目标。必须提交通过可信独立渠道核验的 SSH Host 公钥；目标归属于当前 OAuth 用户。"}, func(ctx context.Context, req *mcp.CallToolRequest, in remoteTargetInput) (*mcp.CallToolResult, *remote.Target, error) {
 		actor, err := remoteActor(ctx)
 		if err != nil {
 			if errors.Is(err, errRemoteScopeRequired) {
-				return remoteScopeChallengeResult(resourceMetadataURL), remote.Target{}, nil
+				return remoteScopeChallengeResult(resourceMetadataURL), nil, nil
 			}
-			return nil, remote.Target{}, err
+			return nil, nil, err
 		}
 		out, err := application.remote.CreateTarget(ctx, actor, remote.TargetInput{Name: in.Name, Host: in.Host, Port: in.Port, Username: in.Username, HostKey: in.HostKey})
 		outcome := "success"
@@ -358,9 +358,9 @@ func main() {
 			outcome = "failure"
 		}
 		if auditErr := application.remote.Audit(ctx, actor, out.ID, "", "target.create", outcome, map[string]any{"host": in.Host, "port": in.Port, "username": in.Username, "error": errorText(err)}); auditErr != nil {
-			return nil, remote.Target{}, fmt.Errorf("target operation audit failed: %w", auditErr)
+			return nil, nil, fmt.Errorf("target operation audit failed: %w", auditErr)
 		}
-		return nil, out, err
+		return nil, &out, err
 	})
 	mcp.AddTool(mcpServer, &mcp.Tool{Meta: remoteToolSecurityMeta(), Name: "remote_target_list", Description: "列出当前 OAuth 用户登记的远端 SSH 目标。"}, func(ctx context.Context, req *mcp.CallToolRequest, in emptyInput) (*mcp.CallToolResult, []remote.Target, error) {
 		actor, err := remoteActor(ctx)
@@ -394,13 +394,13 @@ func main() {
 		}
 		return nil, map[string]any{"deleted": true, "target_id": in.TargetID}, nil
 	})
-	mcp.AddTool(mcpServer, &mcp.Tool{Meta: remoteToolSecurityMeta(), Name: "remote_credential_create", Description: "为当前用户的远端目标保存 SSH 私钥。私钥原文写入 PostgreSQL，响应仅返回凭证元数据。"}, func(ctx context.Context, req *mcp.CallToolRequest, in remoteCredentialInput) (*mcp.CallToolResult, remote.Credential, error) {
+	mcp.AddTool(mcpServer, &mcp.Tool{Meta: remoteToolSecurityMeta(), Name: "remote_credential_create", Description: "为当前用户的远端目标保存 SSH 私钥。私钥原文写入 PostgreSQL，响应仅返回凭证元数据。"}, func(ctx context.Context, req *mcp.CallToolRequest, in remoteCredentialInput) (*mcp.CallToolResult, *remote.Credential, error) {
 		actor, err := remoteActor(ctx)
 		if err != nil {
 			if errors.Is(err, errRemoteScopeRequired) {
-				return remoteScopeChallengeResult(resourceMetadataURL), remote.Credential{}, nil
+				return remoteScopeChallengeResult(resourceMetadataURL), nil, nil
 			}
-			return nil, remote.Credential{}, err
+			return nil, nil, err
 		}
 		out, err := application.remote.SaveCredential(ctx, actor, in.TargetID, in.Name, in.PrivateKey, in.Passphrase)
 		outcome := "success"
@@ -408,19 +408,19 @@ func main() {
 			outcome = "failure"
 		}
 		if auditErr := application.remote.Audit(ctx, actor, in.TargetID, out.ID, "credential.create", outcome, map[string]any{"credential_name": in.Name, "error": errorText(err)}); auditErr != nil {
-			return nil, remote.Credential{}, fmt.Errorf("credential operation audit failed: %w", auditErr)
+			return nil, nil, fmt.Errorf("credential operation audit failed: %w", auditErr)
 		}
 		out.PrivateKey = ""
 		out.Passphrase = ""
-		return nil, out, err
+		return nil, &out, err
 	})
-	mcp.AddTool(mcpServer, &mcp.Tool{Meta: remoteToolSecurityMeta(), Name: "remote_credential_read", Description: "读取当前用户拥有的 SSH 凭证，包含 PostgreSQL 中保存的私钥原文。调用需要 remote:ssh:manage 权限并写入审计。"}, func(ctx context.Context, req *mcp.CallToolRequest, in remoteCredentialIDInput) (*mcp.CallToolResult, remote.Credential, error) {
+	mcp.AddTool(mcpServer, &mcp.Tool{Meta: remoteToolSecurityMeta(), Name: "remote_credential_read", Description: "读取当前用户拥有的 SSH 凭证，包含 PostgreSQL 中保存的私钥原文。调用需要 remote:ssh:manage 权限并写入审计。"}, func(ctx context.Context, req *mcp.CallToolRequest, in remoteCredentialIDInput) (*mcp.CallToolResult, *remote.Credential, error) {
 		actor, err := remoteActor(ctx)
 		if err != nil {
 			if errors.Is(err, errRemoteScopeRequired) {
-				return remoteScopeChallengeResult(resourceMetadataURL), remote.Credential{}, nil
+				return remoteScopeChallengeResult(resourceMetadataURL), nil, nil
 			}
-			return nil, remote.Credential{}, err
+			return nil, nil, err
 		}
 		out, err := application.remote.ReadCredential(ctx, actor, in.CredentialID)
 		outcome := "success"
@@ -428,24 +428,24 @@ func main() {
 			outcome = "failure"
 		}
 		if auditErr := application.remote.Audit(ctx, actor, out.TargetID, out.ID, "credential.read", outcome, map[string]any{"error": errorText(err)}); auditErr != nil {
-			return nil, remote.Credential{}, fmt.Errorf("credential read audit failed; secret withheld: %w", auditErr)
+			return nil, nil, fmt.Errorf("credential read audit failed; secret withheld: %w", auditErr)
 		}
-		return nil, out, err
+		return nil, &out, err
 	})
-	mcp.AddTool(mcpServer, &mcp.Tool{Meta: remoteToolSecurityMeta(), Name: "remote_ssh_exec", Description: "通过已登记目标和 SSH 凭证执行远端命令。严格校验固定 Host Key；命令最长 16 KiB、超时最长 300 秒、输出每流最多 1 MiB。"}, func(ctx context.Context, req *mcp.CallToolRequest, in remoteExecInput) (*mcp.CallToolResult, remote.ExecResult, error) {
+	mcp.AddTool(mcpServer, &mcp.Tool{Meta: remoteToolSecurityMeta(), Name: "remote_ssh_exec", Description: "通过已登记目标和 SSH 凭证执行远端命令。严格校验固定 Host Key；命令最长 16 KiB、超时最长 300 秒、输出每流最多 1 MiB。"}, func(ctx context.Context, req *mcp.CallToolRequest, in remoteExecInput) (*mcp.CallToolResult, *remote.ExecResult, error) {
 		actor, err := remoteActor(ctx)
 		if err != nil {
 			if errors.Is(err, errRemoteScopeRequired) {
-				return remoteScopeChallengeResult(resourceMetadataURL), remote.ExecResult{}, nil
+				return remoteScopeChallengeResult(resourceMetadataURL), nil, nil
 			}
-			return nil, remote.ExecResult{}, err
+			return nil, nil, err
 		}
 		timeout := in.TimeoutSeconds
 		if timeout == 0 {
 			timeout = 30
 		}
 		if timeout < 1 || timeout > 300 {
-			return nil, remote.ExecResult{}, errors.New("timeout_seconds 必须在 1 至 300 之间")
+			return nil, nil, errors.New("timeout_seconds 必须在 1 至 300 之间")
 		}
 		out, err := application.remote.Execute(ctx, actor, in.TargetID, in.CredentialID, in.Command, time.Duration(timeout)*time.Second)
 		outcome := "success"
@@ -454,9 +454,9 @@ func main() {
 		}
 		sum := sha256.Sum256([]byte(in.Command))
 		if auditErr := application.remote.Audit(ctx, actor, in.TargetID, in.CredentialID, "ssh.exec", outcome, map[string]any{"command_sha256": hex.EncodeToString(sum[:]), "exit_code": out.ExitCode, "duration_ms": out.DurationMS, "error": errorText(err)}); auditErr != nil {
-			return nil, remote.ExecResult{}, fmt.Errorf("remote execution audit failed: %w", auditErr)
+			return nil, nil, fmt.Errorf("remote execution audit failed: %w", auditErr)
 		}
-		return nil, out, err
+		return nil, &out, err
 	})
 
 	handler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server { return mcpServer }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true, DisableLocalhostProtection: true})

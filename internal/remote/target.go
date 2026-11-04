@@ -1,5 +1,7 @@
-// Package remote persists and validates operator-managed SSH targets.
-// This file owns target input validation, pinned host identity, and owner-scoped CRUD.
+// Target operations validate and persist operator-managed SSH endpoints.
+// Dependencies: PostgreSQL through Store, UUID parsing, and x/crypto/ssh host-key parsing.
+// Collaboration: remote_tools.go calls these methods; credentials and audit records reference target IDs.
+// Side effects: PostgreSQL reads/writes only; this file never initiates network connections.
 package remote
 
 // Target operations validate operator-supplied host identity and persist user-owned

@@ -167,6 +167,18 @@ func TestCredentialDefaultsOwnershipAndConcurrentRotation(t *testing.T) {
 	if _, err = store.ReadCredential(ctx, other, items[0].ID); err == nil {
 		t.Fatal("cross-owner secret read was accepted")
 	}
+
+	// Defend against inconsistent rows created outside the Store API: a credential
+	// owner must also own its parent target before metadata or secret reads succeed.
+	if _, err = store.Pool.Exec(ctx, `UPDATE remote.credentials SET owner_user_id=$2 WHERE id=$1`, items[0].ID, otherID); err != nil {
+		t.Fatalf("create inconsistent ownership fixture: %v", err)
+	}
+	if got, listErr := store.ListCredentials(ctx, other, target.ID); listErr != nil || len(got) != 0 {
+		t.Fatalf("credential with mismatched parent ownership was listed: %#v, err=%v", got, listErr)
+	}
+	if _, err = store.ReadCredential(ctx, other, items[0].ID); err == nil {
+		t.Fatal("credential secret was readable when its parent target had another owner")
+	}
 	if err = store.DeleteTarget(ctx, actor, target.ID); err != nil {
 		t.Fatalf("delete isolated integration target: %v", err)
 	}

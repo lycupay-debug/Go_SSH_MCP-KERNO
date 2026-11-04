@@ -1,5 +1,7 @@
-// Package remote records auditable metadata for remote SSH operations.
-// This file stores operation outcomes and non-secret details; callers must hash commands.
+// Audit operations persist structured metadata for remote SSH tool calls.
+// Dependencies: PostgreSQL through Store, JSON encoding, and UUID validation.
+// Collaboration: remote_tools.go supplies operation names, outcomes, IDs, and non-secret details.
+// Side effects: inserts audit rows; callers must never pass private keys, passphrases, tokens, or raw commands.
 package remote
 
 // Audit writes structured metadata for remote SSH operations. Callers must pass hashes

@@ -1,5 +1,7 @@
-// Package remote persists and validates operator-managed SSH credentials.
-// This file owns credential lifecycle, default-key transactions, and explicit secret reads.
+// Credential operations validate, persist, list, and select SSH authentication keys.
+// Dependencies: PostgreSQL transactions through Store, UUID parsing, and x/crypto/ssh key parsing.
+// Collaboration: remote_tools.go exposes metadata-only create/list and explicit secret-read handlers.
+// Side effects: PostgreSQL reads/writes; private keys and optional passphrases are stored as configured.
 package remote
 
 // Credential operations validate SSH private keys, persist them for an owned target,
@@ -72,7 +74,11 @@ func (s *Store) ListCredentials(ctx context.Context, actor Actor, targetID strin
 	if err != nil {
 		return nil, errors.New("target_id 必须是 UUID")
 	}
-	rows, err := s.Pool.Query(ctx, `SELECT id::text,target_id::text,name,fingerprint,is_enabled,is_default,created_at FROM remote.credentials WHERE target_id=$1 AND owner_user_id=$2 ORDER BY is_default DESC,created_at DESC,id`, tid, actor.UserID)
+	rows, err := s.Pool.Query(ctx, `SELECT c.id::text,c.target_id::text,c.name,c.fingerprint,c.is_enabled,c.is_default,c.created_at
+		FROM remote.credentials AS c
+		JOIN remote.targets AS t ON t.id=c.target_id AND t.owner_user_id=c.owner_user_id
+		WHERE c.target_id=$1 AND c.owner_user_id=$2
+		ORDER BY c.is_default DESC,c.created_at DESC,c.id`, tid, actor.UserID)
 	if err != nil {
 		return nil, fmt.Errorf("list SSH credentials: %w", err)
 	}
@@ -130,7 +136,10 @@ func (s *Store) ReadCredential(ctx context.Context, actor Actor, credentialID st
 		return Credential{}, errors.New("credential_id 必须是 UUID")
 	}
 	var out Credential
-	err = s.Pool.QueryRow(ctx, `SELECT id::text,target_id::text,name,private_key,passphrase,public_key,fingerprint,is_enabled,created_at FROM remote.credentials WHERE id=$1 AND owner_user_id=$2`, id, actor.UserID).Scan(&out.ID, &out.TargetID, &out.Name, &out.PrivateKey, &out.Passphrase, &out.PublicKey, &out.Fingerprint, &out.Enabled, &out.CreatedAt)
+	err = s.Pool.QueryRow(ctx, `SELECT c.id::text,c.target_id::text,c.name,c.private_key,c.passphrase,c.public_key,c.fingerprint,c.is_enabled,c.created_at
+		FROM remote.credentials AS c
+		JOIN remote.targets AS t ON t.id=c.target_id AND t.owner_user_id=c.owner_user_id
+		WHERE c.id=$1 AND c.owner_user_id=$2`, id, actor.UserID).Scan(&out.ID, &out.TargetID, &out.Name, &out.PrivateKey, &out.Passphrase, &out.PublicKey, &out.Fingerprint, &out.Enabled, &out.CreatedAt)
 	if err != nil {
 		return out, errors.New("credential not found or inaccessible")
 	}

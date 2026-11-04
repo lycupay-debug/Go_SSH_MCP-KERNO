@@ -1,5 +1,7 @@
-// Package remote provides bounded SSH execution for registered, owner-scoped targets.
-// This file owns pinned-host-key transport, command deadlines, and output caps.
+// SSH execution connects to registered targets using owner-scoped credentials and pinned host keys.
+// Dependencies: PostgreSQL through Store, context/net deadlines, and x/crypto/ssh transport.
+// Collaboration: remote_tools.go validates OAuth scope and delegates command execution here.
+// Side effects: outbound SSH connections and remote command execution; output and duration are bounded.
 package remote
 
 // SSH execution applies strict input/time/output bounds and a pinned host-key callback.

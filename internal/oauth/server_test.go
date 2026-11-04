@@ -105,3 +105,27 @@ func TestOAuthMetadataAdvertisesRefreshScope(t *testing.T) {
 		t.Fatal("go-ssh-mcp, offline_access and remote SSH scope should be accepted")
 	}
 }
+
+func TestAuthorizationScopes(t *testing.T) {
+	registered := []string{scopeName, remoteSSHScope}
+
+	got := authorizationScopes("", registered)
+	if len(got) != 2 || got[0] != scopeName || got[1] != remoteSSHScope {
+		t.Fatalf("omitted scope should inherit registered scopes: %#v", got)
+	}
+
+	got = authorizationScopes("   ", registered)
+	if len(got) != 2 || got[0] != scopeName || got[1] != remoteSSHScope {
+		t.Fatalf("blank scope should inherit registered scopes: %#v", got)
+	}
+
+	got = authorizationScopes(scopeName, registered)
+	if len(got) != 1 || got[0] != scopeName {
+		t.Fatalf("explicit scope must not be expanded: %#v", got)
+	}
+
+	got = authorizationScopes(scopeName+" "+remoteSSHScope, registered)
+	if len(got) != 2 || got[0] != scopeName || got[1] != remoteSSHScope {
+		t.Fatalf("explicit multiple scopes were not preserved: %#v", got)
+	}
+}

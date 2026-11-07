@@ -19,9 +19,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git archive --format=tar.gz --prefix=kerno-source/ "$GITHUB_REF_NAME" -o kerno-source.tar.gz
-          sha256sum kerno-source.tar.gz > SHA256SUMS
+          git archive --format=tar.gz --prefix=kerno-source/ "$GITHUB_REF_NAME" -o kerno-source_Remote.tar.gz
+          sha256sum kerno-source_Remote.tar.gz > SHA256SUMS
       - name: Publish source archive
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" kerno-source.tar.gz SHA256SUMS --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" kerno-source_Remote.tar.gz SHA256SUMS --title "${GITHUB_REF_NAME}_Remote" --generate-notes

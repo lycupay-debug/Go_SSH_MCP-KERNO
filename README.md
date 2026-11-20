@@ -1,6 +1,6 @@
 # KERNO — Go SSH MCP
 
-KERNO 是一个基于 Go、C/cgo、PostgreSQL 与 Model Context Protocol (MCP) 的主机执行服务。它提供受 OAuth 保护的文件、服务、Shell、并行任务和数据库工具。
+KERNO 是一个基于 Go 控制平面、独立 C Executor、PostgreSQL 与 Model Context Protocol (MCP) 的主机执行服务。它提供受 OAuth 保护的文件、服务、Shell、并行任务和数据库工具。
 
 > **安全警告：** 这是高权限远程执行服务，不是沙箱。当前实现要求以 root 身份运行；`execute_shell`、`execute_parallel` 和 `database_query` 可以执行破坏性操作。只应部署在可信主机上，并只授权可信用户和客户端。不要直接暴露未经过 TLS 反向代理保护的监听端口。
 
@@ -21,15 +21,15 @@ KERNO 是一个基于 Go、C/cgo、PostgreSQL 与 Model Context Protocol (MCP) �
 | `get_system_info` | 无 | 返回系统、版本、主机名、运行时间、磁盘、内存等信息 |
 | `list_directory` | `path` | 列出目录项、类型、大小、权限及所有者信息 |
 | `read_file` | `path`、可选 `max_bytes`（默认 200000，范围 1–2000000） | 读取文件内容；可能读取敏感文件，必须控制授权用户 |
-| `write_file` | `path`、`content`、可选 `create_parents` | 创建或覆盖文件；按目标路径当前权限执行，不保证原子写入 |
-| `replace_in_file` | `path`、`old_text`、`new_text`、可选 `replace_all` | 替换文件文本；默认仅替换第一次匹配 |
+| `write_file` | `path`、`content`、可选 `create_parents`、`atomic`（默认 false） | 默认保持直接截断写入；`atomic=true` 时使用同目录临时文件和 rename，跟随符号链接目标，但目标路径会脱离原硬链接 inode |
+| `replace_in_file` | `path`、`old_text`、`new_text`、可选 `replace_all` | 以 64 KiB 分块流式替换并原子提交；默认仅替换第一次匹配，跟随符号链接目标，目标路径会脱离原硬链接 inode |
 | `move_path` | `source`、`destination` | 移动或重命名路径；目标存在时可能覆盖 |
 | `delete_path` | `path`、可选 `recursive` | 删除文件或目录；递归删除会造成不可逆的数据损失 |
 | `get_service_status` | `service` | 查询系统服务状态；当前实现依赖 FreeBSD 服务管理约定 |
 | `get_service_logs` | `path`、可选 `lines`（默认 100，范围 1–2000） | 读取指定日志文件末尾；日志可能包含敏感数据 |
 | `execute_shell` | `command`、可选 `timeout_seconds`（默认 30，范围 1–300） | 通过系统 Shell 执行命令，返回退出码、标准输出和标准错误；拥有服务运行账户的系统权限 |
 | `execute_parallel` | `tasks`（2–32 个独立任务）、可选 `max_parallel`（默认 8，最大 8） | 并行运行独立 Shell 任务；任务须使用不同工作目录，同一 Git 仓库须使用独立 worktree；包含超时、输出限制、清理和审计 |
-| `database_query` | `sql`、可选 `database`、可选 `max_rows`（默认 100，范围 1–500） | 执行单条 PostgreSQL 语句，包括查询、增删改、DDL 和数据库管理操作；数据库角色权限决定实际影响范围 |
+| `database_query` | `sql`、可选 `database`、可选 `max_rows`（默认 100，范围 1–500） | 使用 `DATABASE_URL` 配置的 PostgreSQL 角色权限执行 SQL；数据库角色权限决定实际影响范围 |
 | `remote_target_create` | `name`、`host`、`port`、`username`、`host_key` | 登记远端 SSH 目标；必须提交经独立可信渠道核验的 Host 公钥 |
 | `remote_target_list` | 无 | 列出当前 OAuth 用户登记的 SSH 目标 |
 | `remote_target_delete` | `target_id` | 删除目标及其关联凭证 |
@@ -49,7 +49,7 @@ KERNO 是一个基于 Go、C/cgo、PostgreSQL 与 Model Context Protocol (MCP) �
 ## 架构
 
 - **Go**：MCP Streamable HTTP、OAuth、工具 schema、请求生命周期和审计。
-- **C/cgo**：文件系统操作及独立 C 执行器；依赖 `json-c`。
+- **C Executor**：独立 root 子进程，负责文件系统、系统信息、服务状态和日志操作；Go 通过有版本的 JSON stdin/stdout 协议调用，依赖 `json-c`。
 - **PostgreSQL**：OAuth 用户、客户端、授权、令牌和审计相关数据。
 - **有界并行工作池**：`execute_parallel` 在请求生命周期内调度任务，不提供持久化队列或作业调度器。
 
@@ -59,7 +59,7 @@ KERNO 是一个基于 Go、C/cgo、PostgreSQL 与 Model Context Protocol (MCP) �
 
 - FreeBSD 15.x amd64（当前支持范围）
 - Go 1.26.9 或与 `go.mod` 兼容的版本
-- C 编译器、cgo 和 `json-c` 开发文件
+- C 编译器和 `json-c` 开发文件
 - PostgreSQL 服务及一个专用数据库
 - HTTPS 反向代理和一个由部署者控制的域名
 

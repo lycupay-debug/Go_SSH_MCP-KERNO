@@ -9,10 +9,12 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/http/httputil"
 	"net/url"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -29,7 +31,7 @@ func TestOAuthAuthorizationCodeRefreshRotationIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
 	if err = pool.Ping(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +60,10 @@ func TestOAuthAuthorizationCodeRefreshRotationIntegration(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM oauth.users WHERE id=$1`, userID)
 	})
 
-	issuer := "https://mcp-test.example/go-ssh-mcp"
+	edge := httptest.NewUnstartedServer(http.NotFoundHandler())
+	edge.StartTLS()
+	t.Cleanup(edge.Close)
+	issuer := edge.URL + "/go-ssh-mcp"
 	resource := issuer + "/mcp"
 	server := New(pool, issuer, resource, []byte(strings.Repeat("K", 64)))
 	rootMux := http.NewServeMux()
@@ -75,10 +80,16 @@ func TestOAuthAuthorizationCodeRefreshRotationIntegration(t *testing.T) {
 		cloned.URL.Path = "/.well-known/oauth-authorization-server"
 		rootMux.ServeHTTP(w, cloned)
 	})
-	ts := newTLSServer(t, mux)
-	defer ts.Close()
-	base := ts.URL + "/go-ssh-mcp"
-	metaResp, metaErr := ts.Client().Get(ts.URL + "/.well-known/oauth-protected-resource/go-ssh-mcp/mcp")
+	upstream := newTLSServer(t, mux)
+	target, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.Transport = upstream.Client().Transport
+	edge.Config.Handler = proxy
+	base := issuer
+	metaResp, metaErr := edge.Client().Get(edge.URL + "/.well-known/oauth-protected-resource/go-ssh-mcp/mcp")
 	if metaErr != nil {
 		t.Fatal(metaErr)
 	}
@@ -91,7 +102,7 @@ func TestOAuthAuthorizationCodeRefreshRotationIntegration(t *testing.T) {
 	if resourceMeta["resource"] != resource || metaResp.Header.Get("Access-Control-Allow-Origin") != "*" {
 		t.Fatalf("incorrect path-aware resource metadata: %s", metaBody)
 	}
-	asResp, asErr := ts.Client().Get(ts.URL + "/.well-known/oauth-authorization-server/go-ssh-mcp")
+	asResp, asErr := edge.Client().Get(edge.URL + "/.well-known/oauth-authorization-server/go-ssh-mcp")
 	if asErr != nil {
 		t.Fatal(asErr)
 	}
@@ -102,7 +113,7 @@ func TestOAuthAuthorizationCodeRefreshRotationIntegration(t *testing.T) {
 		t.Fatalf("authorization metadata failed: %d %s", asResp.StatusCode, asBody)
 	}
 	jar, _ := cookiejar.New(nil)
-	client := ts.Client()
+	client := edge.Client()
 	client.Jar = jar
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }
 
@@ -151,7 +162,7 @@ func TestOAuthAuthorizationCodeRefreshRotationIntegration(t *testing.T) {
 		resp.Body.Close()
 		t.Fatalf("authorize status %d: %s", resp.StatusCode, b)
 	}
-	loginURL := ts.URL + resp.Header.Get("Location")
+	loginURL := edge.URL + resp.Header.Get("Location")
 	resp.Body.Close()
 	resp, err = client.Get(loginURL)
 	if err != nil {
@@ -163,7 +174,7 @@ func TestOAuthAuthorizationCodeRefreshRotationIntegration(t *testing.T) {
 		t.Fatalf("login page status %d: %s", resp.StatusCode, b)
 	}
 	resp.Body.Close()
-	loginCSRF := cookieValue(t, jar, ts.URL, "go_ssh_mcp_login_csrf")
+	loginCSRF := cookieValue(t, jar, edge.URL, "go_ssh_mcp_login_csrf")
 	loginForm := url.Values{"request": {queryValue(t, loginURL, "request")}, "login_csrf": {loginCSRF}, "username": {username}, "password": {password}}
 	badLoginForm := cloneValues(loginForm)
 	badLoginForm.Set("login_csrf", "invalid-csrf")
@@ -198,7 +209,7 @@ func TestOAuthAuthorizationCodeRefreshRotationIntegration(t *testing.T) {
 	if !csrfCookieFound {
 		t.Fatal("login response did not set CSRF cookie")
 	}
-	consentURL := ts.URL + resp.Header.Get("Location")
+	consentURL := edge.URL + resp.Header.Get("Location")
 	resp.Body.Close()
 	resp, err = client.Get(consentURL)
 	if err != nil {
@@ -210,7 +221,7 @@ func TestOAuthAuthorizationCodeRefreshRotationIntegration(t *testing.T) {
 		t.Fatalf("consent page status %d: %s", resp.StatusCode, b)
 	}
 	resp.Body.Close()
-	csrf := cookieValue(t, jar, ts.URL, "go_ssh_mcp_csrf")
+	csrf := cookieValue(t, jar, edge.URL, "go_ssh_mcp_csrf")
 	consentForm := url.Values{"request": {queryValue(t, consentURL, "request")}, "csrf_token": {csrf}, "decision": {"approve"}}
 	badConsentForm := cloneValues(consentForm)
 	badConsentForm.Set("csrf_token", "invalid-csrf")
@@ -296,6 +307,78 @@ func TestOAuthAuthorizationCodeRefreshRotationIntegration(t *testing.T) {
 	if expiredResp.StatusCode != http.StatusBadRequest || !strings.Contains(string(expiredBody), "invalid_grant") {
 		t.Fatalf("expired authorization code was not rejected: %d %s", expiredResp.StatusCode, expiredBody)
 	}
+
+	// Expiry is exclusive: a code whose expiry equals the server clock is already expired.
+	boundary := time.Now().UTC().Add(time.Hour).Truncate(time.Microsecond)
+	boundaryCode := "exact-boundary-code-" + uuid.NewString()
+	_, err = pool.Exec(ctx, `INSERT INTO oauth.authorization_codes(id,code_hash,client_id,user_id,redirect_uri,code_challenge,scopes,resource,expires_at) VALUES(gen_random_uuid(),$1,$2,$3,$4,$5,$6,$7,$8)`, hashToken(boundaryCode), clientID, userID, "https://client.example/callback", challenge, []string{scopeName}, resource, boundary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.now = func() time.Time { return boundary }
+	boundaryCodeForm := url.Values{"grant_type": {"authorization_code"}, "client_id": {clientID}, "code": {boundaryCode}, "redirect_uri": {"https://client.example/callback"}, "code_verifier": {verifier}, "resource": {resource}}
+	boundaryCodeResp, boundaryCodeErr := client.PostForm(base+"/token", boundaryCodeForm)
+	if boundaryCodeErr != nil {
+		t.Fatal(boundaryCodeErr)
+	}
+	boundaryCodeBody, _ := io.ReadAll(boundaryCodeResp.Body)
+	boundaryCodeResp.Body.Close()
+	if boundaryCodeResp.StatusCode != http.StatusBadRequest || !strings.Contains(string(boundaryCodeBody), "invalid_grant") {
+		t.Fatalf("authorization code at exact expiry boundary was accepted: %d %s", boundaryCodeResp.StatusCode, boundaryCodeBody)
+	}
+	futureCode := "future-boundary-code-" + uuid.NewString()
+	_, err = pool.Exec(ctx, `INSERT INTO oauth.authorization_codes(id,code_hash,client_id,user_id,redirect_uri,code_challenge,scopes,resource,expires_at) VALUES(gen_random_uuid(),$1,$2,$3,$4,$5,$6,$7,$8)`, hashToken(futureCode), clientID, userID, "https://client.example/callback", challenge, []string{scopeName}, resource, boundary.Add(time.Microsecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	futureCodeForm := url.Values{"grant_type": {"authorization_code"}, "client_id": {clientID}, "code": {futureCode}, "redirect_uri": {"https://client.example/callback"}, "code_verifier": {verifier}, "resource": {resource}}
+	futureCodeResp, futureCodeErr := client.PostForm(base+"/token", futureCodeForm)
+	if futureCodeErr != nil {
+		t.Fatal(futureCodeErr)
+	}
+	futureCodeBody, _ := io.ReadAll(futureCodeResp.Body)
+	futureCodeResp.Body.Close()
+	if futureCodeResp.StatusCode != http.StatusOK {
+		t.Fatalf("authorization code just after expiry boundary was rejected: %d %s", futureCodeResp.StatusCode, futureCodeBody)
+	}
+
+	boundaryRefresh := "exact-boundary-refresh-" + uuid.NewString()
+	boundaryFamily := uuid.NewString()
+	if _, err = pool.Exec(ctx, `INSERT INTO oauth.refresh_token_families(id,client_id,user_id) VALUES($1,$2,$3)`, boundaryFamily, clientID, userID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `INSERT INTO oauth.refresh_tokens(id,token_hash,family_id,client_id,user_id,scopes,resource,expires_at) VALUES(gen_random_uuid(),$1,$2,$3,$4,$5,$6,$7)`, hashToken(boundaryRefresh), boundaryFamily, clientID, userID, []string{scopeName}, resource, boundary); err != nil {
+		t.Fatal(err)
+	}
+	boundaryRefreshForm := url.Values{"grant_type": {"refresh_token"}, "client_id": {clientID}, "refresh_token": {boundaryRefresh}, "resource": {resource}}
+	boundaryRefreshResp, boundaryRefreshErr := client.PostForm(base+"/token", boundaryRefreshForm)
+	if boundaryRefreshErr != nil {
+		t.Fatal(boundaryRefreshErr)
+	}
+	boundaryRefreshBody, _ := io.ReadAll(boundaryRefreshResp.Body)
+	boundaryRefreshResp.Body.Close()
+	if boundaryRefreshResp.StatusCode != http.StatusBadRequest || !strings.Contains(string(boundaryRefreshBody), "invalid_grant") {
+		t.Fatalf("refresh token at exact expiry boundary was accepted: %d %s", boundaryRefreshResp.StatusCode, boundaryRefreshBody)
+	}
+	futureRefresh := "future-boundary-refresh-" + uuid.NewString()
+	futureFamily := uuid.NewString()
+	if _, err = pool.Exec(ctx, `INSERT INTO oauth.refresh_token_families(id,client_id,user_id) VALUES($1,$2,$3)`, futureFamily, clientID, userID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `INSERT INTO oauth.refresh_tokens(id,token_hash,family_id,client_id,user_id,scopes,resource,expires_at) VALUES(gen_random_uuid(),$1,$2,$3,$4,$5,$6,$7)`, hashToken(futureRefresh), futureFamily, clientID, userID, []string{scopeName}, resource, boundary.Add(time.Microsecond)); err != nil {
+		t.Fatal(err)
+	}
+	futureRefreshForm := url.Values{"grant_type": {"refresh_token"}, "client_id": {clientID}, "refresh_token": {futureRefresh}, "resource": {resource}}
+	futureRefreshResp, futureRefreshErr := client.PostForm(base+"/token", futureRefreshForm)
+	if futureRefreshErr != nil {
+		t.Fatal(futureRefreshErr)
+	}
+	futureRefreshBody, _ := io.ReadAll(futureRefreshResp.Body)
+	futureRefreshResp.Body.Close()
+	if futureRefreshResp.StatusCode != http.StatusOK {
+		t.Fatalf("refresh token just after expiry boundary was rejected: %d %s", futureRefreshResp.StatusCode, futureRefreshBody)
+	}
+	server.now = nil
 
 	refreshForm := url.Values{"grant_type": {"refresh_token"}, "client_id": {clientID}, "refresh_token": {refresh1}, "resource": {resource}}
 	resp, err = client.PostForm(base+"/token", refreshForm)

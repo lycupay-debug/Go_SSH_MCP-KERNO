@@ -28,8 +28,6 @@ const (
 
 var (
 	taskIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,48}$`)
-	allowedRoots  = []string{"/opt", "/tmp", "/var/tmp", "/home"}
-	protectedRoot = "/opt/kerno"
 	globalSlots   = make(chan struct{}, MaxParallel)
 )
 
@@ -184,19 +182,6 @@ func validate(request Request) ([]validatedTask, int, error) {
 		if err != nil || !info.IsDir() {
 			return nil, 0, fmt.Errorf("任务 %s 的 working_directory 必须是存在的目录", task.TaskID)
 		}
-		if isSameOrChild(resolved, protectedRoot) {
-			return nil, 0, errors.New("并行执行器禁止在 /opt/kerno 内运行；请使用该项目的独立 Git worktree")
-		}
-		allowed := false
-		for _, root := range allowedRoots {
-			if resolved != root && isSameOrChild(resolved, root) {
-				allowed = true
-				break
-			}
-		}
-		if !allowed {
-			return nil, 0, fmt.Errorf("任务 %s 的工作目录必须位于 /opt、/tmp、/var/tmp 或 /home 的子目录", task.TaskID)
-		}
 		if previous, exists := seenDirs[resolved]; exists {
 			return nil, 0, fmt.Errorf("任务 %s 与 %s 使用同一工作目录；每个任务必须有独立目录", task.TaskID, previous)
 		}
@@ -315,16 +300,6 @@ func gitDirectory(path string) (string, bool) {
 		gitDir = abs
 	}
 	return filepath.Clean(gitDir), true
-}
-
-func isSameOrChild(path, root string) bool {
-	path, err1 := filepath.Abs(filepath.Clean(path))
-	root, err2 := filepath.Abs(filepath.Clean(root))
-	if err1 != nil || err2 != nil {
-		return false
-	}
-	rel, err := filepath.Rel(root, path)
-	return err == nil && (rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))))
 }
 
 func terminateProcessGroup(pid int) bool {

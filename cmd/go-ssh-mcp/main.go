@@ -20,10 +20,12 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/lycupay-debug/Go_SSH_MCP-KERNO/internal/auditredact"
 	"github.com/lycupay-debug/Go_SSH_MCP-KERNO/internal/config"
 	"github.com/lycupay-debug/Go_SSH_MCP-KERNO/internal/executor"
 	"github.com/lycupay-debug/Go_SSH_MCP-KERNO/internal/oauth"
@@ -44,6 +46,7 @@ type writeFileInput struct {
 	Path          string `json:"path"`
 	Content       string `json:"content"`
 	CreateParents bool   `json:"create_parents,omitempty"`
+	Atomic        bool   `json:"atomic,omitempty" jsonschema_description:"启用同目录临时文件加 rename 的原子替换；默认 false。原子模式会跟随符号链接目标，但替换后会使目标路径脱离原硬链接 inode。"`
 }
 type replaceFileInput struct {
 	Path       string `json:"path"`
@@ -124,7 +127,7 @@ func main() {
 	if err = pool.Ping(ctx); err != nil {
 		log.Fatalf("database connection failed: %v", err)
 	}
-	runner := &executor.Executor{Path: cfg.CExecutorPath, Native: true, MaxOutputBytes: cfg.MaxOutputBytes}
+	runner := &executor.Executor{Path: cfg.CExecutorPath, MaxOutputBytes: cfg.MaxOutputBytes}
 	if len(os.Args) > 1 && os.Args[1] == "--check-config" {
 		if _, err = os.Stat(cfg.CExecutorPath); err != nil {
 			log.Fatal("C executor unavailable")
@@ -139,6 +142,34 @@ func main() {
 		log.Fatal(err)
 	}
 
+	registerLocalTools(mcpServer, application, pool, cfg)
+
+	registerRemoteTools(mcpServer, application, resourceMetadataURL)
+
+	handler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server { return mcpServer }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true, DisableLocalhostProtection: true})
+	authHandler := auth.RequireBearerToken(tokenVerifier(pool, cfg.ResourceURL), &auth.RequireBearerTokenOptions{ResourceMetadataURL: resourceMetadataURL, Scopes: []string{"go-ssh-mcp"}})
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", authHandler(handler))
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{\"status\":\"ok\",\"service\":\"Go_SSH_MCP\",\"execution_mode\":\"synchronous+bounded-parallel\",\"max_parallel\":8}"))
+	})
+	oauthServer := oauth.New(pool, cfg.PublicIssuerURL, cfg.ResourceURL, key)
+	oauthServer.RegisterRoutes(mux)
+	srv := &http.Server{Addr: cfg.ListenAddr, Handler: securityHeaders(mux), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 0, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 20}
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	}()
+	logger.Info("Go_SSH_MCP starting", "listen", cfg.ListenAddr, "execution_mode", "synchronous+bounded-parallel", "max_parallel", parallel.MaxParallel, "tool_count", 20, "oauth_metadata_ready", true)
+	if err = srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Fatal(err)
+	}
+}
+
+func registerLocalTools(mcpServer *mcp.Server, application *app, pool *pgxpool.Pool, cfg config.Config) {
 	mcp.AddTool(mcpServer, &mcp.Tool{Name: "get_system_info", Description: "获取 FreeBSD 版本、主机名、运行时间、磁盘、内存及运行时信息。"}, func(ctx context.Context, req *mcp.CallToolRequest, in emptyInput) (*mcp.CallToolResult, map[string]any, error) {
 		out, err := application.call(ctx, "system.info", map[string]any{}, 30, actorFromContext(ctx))
 		return nil, out, err
@@ -174,11 +205,11 @@ func main() {
 		out, err := application.call(ctx, "file.read", map[string]any{"path": in.Path, "max_bytes": max}, 30, actorFromContext(ctx))
 		return nil, out, err
 	})
-	mcp.AddTool(mcpServer, &mcp.Tool{Name: "write_file", Description: "创建或覆盖 UTF-8 文本文件。覆盖现有文件前应先备份。"}, func(ctx context.Context, req *mcp.CallToolRequest, in writeFileInput) (*mcp.CallToolResult, map[string]any, error) {
-		out, err := application.call(ctx, "file.write", map[string]any{"path": in.Path, "content": in.Content, "create_parents": in.CreateParents}, 60, actorFromContext(ctx))
+	mcp.AddTool(mcpServer, &mcp.Tool{Name: "write_file", Description: "创建或覆盖 UTF-8 文本文件。默认直接写入；atomic=true 时使用同目录临时文件和 rename 原子替换。原子模式跟随符号链接目标，但会使目标路径脱离原硬链接 inode。"}, func(ctx context.Context, req *mcp.CallToolRequest, in writeFileInput) (*mcp.CallToolResult, map[string]any, error) {
+		out, err := application.call(ctx, "file.write", map[string]any{"path": in.Path, "content": in.Content, "create_parents": in.CreateParents, "atomic": in.Atomic}, 60, actorFromContext(ctx))
 		return nil, out, err
 	})
-	mcp.AddTool(mcpServer, &mcp.Tool{Name: "replace_in_file", Description: "替换文件文本；默认只替换第一次出现的匹配项。"}, func(ctx context.Context, req *mcp.CallToolRequest, in replaceFileInput) (*mcp.CallToolResult, map[string]any, error) {
+	mcp.AddTool(mcpServer, &mcp.Tool{Name: "replace_in_file", Description: "以流式方式替换文件字节；默认只替换第一次出现的匹配项，并原子提交。符号链接会跟随到目标文件；目标路径会脱离原硬链接 inode。"}, func(ctx context.Context, req *mcp.CallToolRequest, in replaceFileInput) (*mcp.CallToolResult, map[string]any, error) {
 		out, err := application.call(ctx, "file.replace", map[string]any{"path": in.Path, "old_text": in.OldText, "new_text": in.NewText, "replace_all": in.ReplaceAll}, 60, actorFromContext(ctx))
 		return nil, out, err
 	})
@@ -223,7 +254,7 @@ func main() {
 		out, err := application.executeParallel(ctx, in, actorFromContext(ctx))
 		return nil, out, err
 	})
-	mcp.AddTool(mcpServer, &mcp.Tool{Name: "database_query", Description: "使用 Go SSH MCP PostgreSQL 超级用户权限，在指定数据库执行单条 SQL。支持 SELECT/INSERT/UPDATE/DELETE、DDL 及数据库管理语句；最多返回 500 行。database 可指定集群内目标数据库，所有调用均要求 OAuth 身份认证并写入审计日志。"}, func(ctx context.Context, req *mcp.CallToolRequest, in databaseInput) (*mcp.CallToolResult, map[string]any, error) {
+	mcp.AddTool(mcpServer, &mcp.Tool{Name: "database_query", Description: "使用 DATABASE_URL 配置的 PostgreSQL 角色权限，在指定数据库执行单条 SQL。可执行该角色有权执行的查询、数据修改、DDL 和数据库管理语句；最多返回 500 行。database 可指定集群内目标数据库，所有调用均要求 OAuth 身份认证并写入审计日志。"}, func(ctx context.Context, req *mcp.CallToolRequest, in databaseInput) (*mcp.CallToolResult, map[string]any, error) {
 		actor := actorFromContext(ctx)
 		if strings.TrimSpace(actor) == "" {
 			return nil, nil, errors.New("authenticated OAuth user is required")
@@ -261,7 +292,10 @@ func main() {
 				databaseConfig.MaxConns = 1
 				targetPool, connectErr := pgxpool.NewWithConfig(ctx, databaseConfig)
 				if connectErr != nil {
-					entry := map[string]any{"actor": actor, "operation": "database.query", "database": database, "query_sha256": queryHash, "success": false, "error": connectErr.Error(), "duration_ms": time.Since(started).Milliseconds(), "timestamp": time.Now().UTC().Format(time.RFC3339Nano)}
+					entry := map[string]any{"actor": actor, "operation": "database.query", "database": database, "query_sha256": queryHash, "success": false, "duration_ms": time.Since(started).Milliseconds(), "timestamp": time.Now().UTC().Format(time.RFC3339Nano)}
+					for key, value := range databaseAuditErrorFields(connectErr) {
+						entry[key] = value
+					}
 					if auditErr := writeAudit(cfg.AuditLogPath, entry); auditErr != nil {
 						return nil, nil, fmt.Errorf("database connection failed (%v) and audit logging failed: %w", connectErr, auditErr)
 					}
@@ -274,7 +308,10 @@ func main() {
 		}
 		rows, err := queryPool.Query(ctx, query)
 		if err != nil {
-			entry := map[string]any{"actor": actor, "operation": "database.query", "database": database, "query_sha256": queryHash, "success": false, "error": err.Error(), "duration_ms": time.Since(started).Milliseconds(), "timestamp": time.Now().UTC().Format(time.RFC3339Nano)}
+			entry := map[string]any{"actor": actor, "operation": "database.query", "database": database, "query_sha256": queryHash, "success": false, "duration_ms": time.Since(started).Milliseconds(), "timestamp": time.Now().UTC().Format(time.RFC3339Nano)}
+			for key, value := range databaseAuditErrorFields(err) {
+				entry[key] = value
+			}
 			if auditErr := writeAudit(cfg.AuditLogPath, entry); auditErr != nil {
 				return nil, nil, fmt.Errorf("database query failed (%v) and audit logging failed: %w", err, auditErr)
 			}
@@ -302,7 +339,10 @@ func main() {
 		rowErr := rows.Err()
 		rows.Close()
 		if rowErr != nil {
-			entry := map[string]any{"actor": actor, "operation": "database.query", "database": database, "query_sha256": queryHash, "success": false, "error": rowErr.Error(), "duration_ms": time.Since(started).Milliseconds(), "timestamp": time.Now().UTC().Format(time.RFC3339Nano)}
+			entry := map[string]any{"actor": actor, "operation": "database.query", "database": database, "query_sha256": queryHash, "success": false, "duration_ms": time.Since(started).Milliseconds(), "timestamp": time.Now().UTC().Format(time.RFC3339Nano)}
+			for key, value := range databaseAuditErrorFields(rowErr) {
+				entry[key] = value
+			}
 			if auditErr := writeAudit(cfg.AuditLogPath, entry); auditErr != nil {
 				return nil, nil, fmt.Errorf("database result failed (%v) and audit logging failed: %w", rowErr, auditErr)
 			}
@@ -316,29 +356,6 @@ func main() {
 		return nil, map[string]any{"database": database, "columns": columns, "rows": resultRows, "row_count": len(resultRows), "command_tag": commandTag, "truncated": truncated, "query_sha256": queryHash}, nil
 	})
 
-	registerRemoteTools(mcpServer, application, resourceMetadataURL)
-
-	handler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server { return mcpServer }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true, DisableLocalhostProtection: true})
-	authHandler := auth.RequireBearerToken(tokenVerifier(pool, cfg.ResourceURL), &auth.RequireBearerTokenOptions{ResourceMetadataURL: resourceMetadataURL, Scopes: []string{"go-ssh-mcp"}})
-	mux := http.NewServeMux()
-	mux.Handle("/mcp", authHandler(handler))
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte("{\"status\":\"ok\",\"service\":\"Go_SSH_MCP\",\"execution_mode\":\"synchronous+bounded-parallel\",\"max_parallel\":8}"))
-	})
-	oauthServer := oauth.New(pool, cfg.PublicIssuerURL, cfg.ResourceURL, key)
-	oauthServer.RegisterRoutes(mux)
-	srv := &http.Server{Addr: cfg.ListenAddr, Handler: securityHeaders(mux), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 0, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 20}
-	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(shutdownCtx)
-	}()
-	logger.Info("Go_SSH_MCP starting", "listen", cfg.ListenAddr, "execution_mode", "synchronous+bounded-parallel", "max_parallel", parallel.MaxParallel, "tool_count", 20, "oauth_metadata_ready", true)
-	if err = srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatal(err)
-	}
 }
 
 func (a *app) call(ctx context.Context, operation string, input map[string]any, timeoutSeconds int, actor string) (map[string]any, error) {
@@ -363,8 +380,8 @@ func (a *app) call(ctx context.Context, operation string, input map[string]any, 
 		}
 	}
 	if err != nil {
-		entry["error"] = err.Error()
-		a.logger.Error("tool operation failed", "operation", operation, "actor", actor, "duration_ms", time.Since(started).Milliseconds(), "error", err)
+		entry["error_type"] = auditErrorType(err)
+		a.logger.Error("tool operation failed", "operation", operation, "actor", actor, "duration_ms", time.Since(started).Milliseconds(), "error_type", auditErrorType(err))
 		if auditErr := writeAudit(a.auditPath, entry); auditErr != nil {
 			return nil, fmt.Errorf("operation failed (%v) and audit logging failed: %w", err, auditErr)
 		}
@@ -375,7 +392,7 @@ func (a *app) call(ctx context.Context, operation string, input map[string]any, 
 		out = direct
 	} else if err = json.Unmarshal(result.Response.Result, &out); err != nil {
 		entry["success"] = false
-		entry["error"] = err.Error()
+		entry["error_type"] = auditErrorType(err)
 		if auditErr := writeAudit(a.auditPath, entry); auditErr != nil {
 			return nil, fmt.Errorf("decode executor response (%v) and audit logging failed: %w", err, auditErr)
 		}
@@ -464,13 +481,13 @@ func (a *app) executeParallel(ctx context.Context, in parallelInput, actor strin
 				auditErr = err
 			}
 			auditMu.Unlock()
-			a.logger.Error("parallel task audit failed", "event", event, "error", err)
+			a.logger.Error("parallel task audit failed", "event", event, "error_type", auditErrorType(err))
 		}
 	}
 	started := time.Now()
 	result, err := parallel.Run(ctx, parallel.Request{Tasks: in.Tasks, MaxParallel: in.MaxParallel}, "/var/log/go-ssh-mcp-parallel", audit)
 	if err != nil {
-		entry := map[string]any{"actor": actor, "operation": "execute_parallel", "success": false, "error": err.Error(), "timestamp": time.Now().UTC().Format(time.RFC3339Nano)}
+		entry := map[string]any{"actor": actor, "operation": "execute_parallel", "success": false, "error_type": auditErrorType(err), "timestamp": time.Now().UTC().Format(time.RFC3339Nano)}
 		if auditErr := writeAudit(a.auditPath, entry); auditErr != nil {
 			return parallel.Summary{}, fmt.Errorf("parallel validation failed (%v) and audit logging failed: %w", err, auditErr)
 		}
@@ -497,6 +514,22 @@ func tailRunes(value string, max int) string {
 	return string(runes[len(runes)-max:])
 }
 
+func auditErrorType(err error) string {
+	if err == nil {
+		return ""
+	}
+	return fmt.Sprintf("%T", err)
+}
+
+func databaseAuditErrorFields(err error) map[string]any {
+	fields := map[string]any{"error_type": auditErrorType(err)}
+	var postgresError *pgconn.PgError
+	if errors.As(err, &postgresError) && postgresError.Code != "" {
+		fields["sqlstate"] = postgresError.Code
+	}
+	return fields
+}
+
 func writeAudit(path string, entry map[string]any) error {
 	if path == "" {
 		path = "/var/log/kerno-audit.log"
@@ -512,7 +545,7 @@ func writeAudit(path string, entry map[string]any) error {
 	}
 	f := os.NewFile(uintptr(fd), path)
 	defer f.Close()
-	raw, err := json.Marshal(entry)
+	raw, err := json.Marshal(auditredact.Map(entry))
 	if err != nil {
 		return err
 	}

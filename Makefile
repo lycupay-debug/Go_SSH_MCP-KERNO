@@ -1,6 +1,6 @@
 GO ?= go
 
-.PHONY: build build-candidate build-production build-c build-c-candidate test test-integration vet migrate clean clean-production
+.PHONY: build build-candidate build-production build-c build-c-candidate build-c-test test test-integration vet migrate clean clean-production
 
 # Safe default for the development branch: never replace executables used by the live service.
 build: build-candidate
@@ -21,13 +21,17 @@ build-c:
 build-c-candidate:
 	$(MAKE) -C executor/c all OUT=../../bin/host-executor-candidate
 
-test: build-c-candidate
-	C_EXECUTOR_TEST_PATH="$$(pwd)/bin/host-executor-candidate" $(GO) test -count=1 ./...
+# Test-only C executor with deterministic metadata-race synchronization hooks.
+build-c-test:
+	$(MAKE) -C executor/c all OUT=../../bin/host-executor-test CFLAGS_EXTRA=-DKERNO_TEST_HOOKS
+
+test: build-c-test
+	C_EXECUTOR_TEST_PATH="$$(pwd)/bin/host-executor-test" $(GO) test -count=1 ./...
 
 # Requires a disposable PostgreSQL database initialized with migrations/001_oauth.sql, 002_remote_ssh.sql and 003_remote_ssh_default_credential.sql.
-test-integration: build-c-candidate
+test-integration: build-c-test
 	@test -n "$(GO_SSH_MCP_TEST_DATABASE_URL)" || (echo "GO_SSH_MCP_TEST_DATABASE_URL is required" >&2; exit 2)
-	C_EXECUTOR_TEST_PATH="$$(pwd)/bin/host-executor-candidate" $(GO) test -count=1 -v ./...
+	C_EXECUTOR_TEST_PATH="$$(pwd)/bin/host-executor-test" $(GO) test -count=1 -v ./...
 
 vet:
 	$(GO) vet ./...
@@ -39,7 +43,7 @@ migrate:
 
 # Default clean only removes branch candidate artifacts; live service binaries are preserved.
 clean:
-	rm -f bin/go-ssh-mcp-parallel-candidate bin/go-ssh-mcp-admin-user-candidate bin/host-executor-candidate
+	rm -f bin/go-ssh-mcp-parallel-candidate bin/go-ssh-mcp-admin-user-candidate bin/host-executor-candidate bin/host-executor-test
 
 clean-production:
 	rm -f bin/go-ssh-mcp bin/go-ssh-mcp-admin-user bin/host-executor

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -71,6 +72,55 @@ func TestCExecutorFileLifecycleAndAtomicEdit(t *testing.T) {
 		t.Fatalf("file still exists: %v", err)
 	}
 }
+
+func TestCExecutorDeleteRequiresRecursiveAndDoesNotFollowSymlinks(t *testing.T) {
+	bin := os.Getenv("C_EXECUTOR_TEST_PATH")
+	if bin == "" {
+		bin = filepath.Join("..", "..", "bin", "host-executor")
+	}
+	if _, err := os.Stat(bin); err != nil {
+		t.Skip("build C executor first: " + err.Error())
+	}
+	root := t.TempDir()
+	tree := filepath.Join(root, "tree")
+	if err := os.MkdirAll(filepath.Join(tree, "nested"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tree, "nested", "data.txt"), []byte("data"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	result := runC(t, bin, "file.delete", map[string]any{"path": tree, "recursive": false})
+	if result.OK || result.Error.Code != "RECURSION_REQUIRED" {
+		t.Fatalf("non-recursive deletion of non-empty directory = %#v, want RECURSION_REQUIRED", result)
+	}
+	result = runC(t, bin, "file.delete", map[string]any{"path": tree, "recursive": true})
+	if !result.OK {
+		t.Fatalf("recursive directory deletion failed: %#v", result.Error)
+	}
+	if _, err := os.Stat(tree); !os.IsNotExist(err) {
+		t.Fatalf("recursive delete left directory present: %v", err)
+	}
+
+	target := filepath.Join(root, "target.txt")
+	link := filepath.Join(root, "link.txt")
+	if err := os.WriteFile(target, []byte("target"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	result = runC(t, bin, "file.delete", map[string]any{"path": link})
+	if !result.OK {
+		t.Fatalf("symlink deletion failed: %#v", result.Error)
+	}
+	if _, err := os.Lstat(link); !os.IsNotExist(err) {
+		t.Fatalf("symlink still exists after deletion: %v", err)
+	}
+	if content, err := os.ReadFile(target); err != nil || string(content) != "target" {
+		t.Fatalf("deleting symlink modified target: content=%q err=%v", content, err)
+	}
+}
+
 func TestCExecutorReadsLargeFileWithinConfiguredOutputLimit(t *testing.T) {
 	bin := os.Getenv("C_EXECUTOR_TEST_PATH")
 	if bin == "" {
@@ -196,6 +246,9 @@ func TestPythonParityOperations(t *testing.T) {
 			t.Errorf("system.info missing %q", key)
 		}
 	}
+	if infoFields["runtime"] != "Go SDK + C executor" {
+		t.Errorf("system.info runtime=%v, want Go SDK + C executor", infoFields["runtime"])
+	}
 
 	path := filepath.Join(t.TempDir(), "parity.txt")
 	write, err := e.Execute(ctx, "parity-write", "file.write", map[string]any{"path": path, "content": "alpha\nbeta\nalpha\n", "create_parents": false}, 5*time.Second)
@@ -247,8 +300,8 @@ func TestPythonParityOperations(t *testing.T) {
 	}
 }
 
-func BenchmarkNativeExecutor(b *testing.B) {
-	e := &Executor{Native: true, MaxOutputBytes: 6 * 1024 * 1024}
+func BenchmarkProcessExecutor(b *testing.B) {
+	e := &Executor{MaxOutputBytes: 6 * 1024 * 1024}
 	ctx := context.Background()
 	root := b.TempDir()
 	dir := filepath.Join(root, "listing")
@@ -323,7 +376,7 @@ func BenchmarkNativeExecutor(b *testing.B) {
 }
 
 func TestGoShellExecutorDoesNotLaunchCExecutor(t *testing.T) {
-	e := &Executor{Path: "/definitely/not/a/real/c-executor", Native: true, MaxOutputBytes: 1024 * 1024}
+	e := &Executor{Path: "/definitely/not/a/real/c-executor", MaxOutputBytes: 1024 * 1024}
 	result, err := e.Execute(context.Background(), "go-shell", "shell.exec", map[string]any{"command": "printf out; printf err >&2; exit 7"}, 5*time.Second)
 	if err != nil {
 		t.Fatalf("shell command should return structured result: %v", err)
@@ -338,7 +391,7 @@ func TestGoShellExecutorDoesNotLaunchCExecutor(t *testing.T) {
 }
 
 func TestGoShellExecutorTimeoutCleansProcessGroup(t *testing.T) {
-	e := &Executor{Native: true}
+	e := &Executor{}
 	start := time.Now()
 	result, err := e.Execute(context.Background(), "go-shell-timeout", "shell.exec", map[string]any{"command": "printf partial; sleep 10", "timeout_seconds": 1}, 5*time.Second)
 	if err != nil {
@@ -357,7 +410,7 @@ func TestGoShellExecutorTimeoutCleansProcessGroup(t *testing.T) {
 }
 
 func BenchmarkShortShellGoDirect(b *testing.B) {
-	e := &Executor{Native: true}
+	e := &Executor{}
 	input := map[string]any{"command": "printf x"}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -372,12 +425,283 @@ func BenchmarkShortShellCProcess(b *testing.B) {
 	if bin == "" {
 		bin = filepath.Join("..", "..", "bin", "host-executor")
 	}
-	e := &Executor{Path: bin, Native: false, MaxOutputBytes: 1024 * 1024}
+	e := &Executor{Path: bin, MaxOutputBytes: 1024 * 1024}
 	input := map[string]any{"command": "printf x"}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if _, err := e.Execute(context.Background(), "bench-c-shell", "shell.exec", input, 5*time.Second); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+func TestCExecutorRejectsNULInPath(t *testing.T) {
+	bin := os.Getenv("C_EXECUTOR_TEST_PATH")
+	if bin == "" {
+		bin = filepath.Join("..", "..", "bin", "host-executor")
+	}
+	if _, err := os.Stat(bin); err != nil {
+		t.Skip("build C executor first: " + err.Error())
+	}
+	r := runC(t, bin, "file.read", map[string]any{"path": "/tmp/invalid\x00suffix"})
+	if r.OK || r.Error.Code != "INVALID_ARGUMENT" {
+		t.Fatalf("expected INVALID_ARGUMENT for NUL path, got %#v", r)
+	}
+}
+
+func TestExecutorRejectsMismatchedResponseTaskID(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "fake-executor")
+	script := "#!/bin/sh\nprintf '%s\\n' '{\"ok\":true,\"result\":{},\"task_id\":\"different-task\"}'\n"
+	if err := os.WriteFile(bin, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	e := &Executor{Path: bin, MaxOutputBytes: 1024 * 1024}
+	_, err := e.Execute(context.Background(), "expected-task", "system.info", map[string]any{}, 5*time.Second)
+	if err == nil || !strings.Contains(err.Error(), "task_id mismatch") {
+		t.Fatalf("expected task_id mismatch error, got %v", err)
+	}
+}
+
+func TestExecutorRejectsOversizedRequestBeforeStartingProcess(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "started")
+	bin := filepath.Join(dir, "fake-executor")
+	script := "#!/bin/sh\ntouch " + marker + "\n"
+	if err := os.WriteFile(bin, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	e := &Executor{Path: bin, MaxOutputBytes: 1024 * 1024}
+	_, err := e.Execute(context.Background(), "large-task", "test.operation", map[string]any{"data": strings.Repeat("x", maxRequestBytes)}, 5*time.Second)
+	if err == nil || !strings.Contains(err.Error(), "request exceeds") {
+		t.Fatalf("expected request size rejection, got %v", err)
+	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("executor process should not start for oversized request, stat error=%v", statErr)
+	}
+}
+
+func TestCExecutorRejectsOversizedStdin(t *testing.T) {
+	bin := os.Getenv("C_EXECUTOR_TEST_PATH")
+	if bin == "" {
+		bin = filepath.Join("..", "..", "bin", "host-executor")
+	}
+	if _, err := os.Stat(bin); err != nil {
+		t.Skip("build C executor first: " + err.Error())
+	}
+	cmd := exec.Command(bin)
+	cmd.Stdin = strings.NewReader(strings.Repeat("x", maxRequestBytes+1))
+	out, err := cmd.Output()
+	if err == nil {
+		t.Fatal("expected oversized stdin to return a non-zero exit status")
+	}
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != 2 {
+		t.Fatalf("expected exit code 2, got %v", err)
+	}
+	var response wireResponse
+	if unmarshalErr := json.Unmarshal(out, &response); unmarshalErr != nil {
+		t.Fatalf("invalid oversized-input response %q: %v", out, unmarshalErr)
+	}
+	if response.OK || response.Error.Code != "INVALID_REQUEST" {
+		t.Fatalf("unexpected oversized-input response: %#v", response)
+	}
+}
+
+func TestProcessFileWriteAcceptsPayloadLargerThanLegacyDispatcherLimit(t *testing.T) {
+	bin := os.Getenv("C_EXECUTOR_TEST_PATH")
+	if bin == "" {
+		bin = filepath.Join("..", "..", "bin", "host-executor")
+	}
+	if _, err := os.Stat(bin); err != nil {
+		t.Skip("build C executor first: " + err.Error())
+	}
+	path := filepath.Join(t.TempDir(), "large-write.bin")
+	content := strings.Repeat("z", 5*1024*1024)
+	e := &Executor{Path: bin, MaxOutputBytes: 1024 * 1024}
+	result, err := e.Execute(context.Background(), "large-write", "file.write", map[string]any{"path": path, "content": content}, 15*time.Second)
+	if err != nil {
+		t.Fatalf("5 MiB file.write failed: %v", err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(result.Response.Result, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if fields["bytes_written"] != float64(len(content)) {
+		t.Fatalf("bytes_written mismatch: %#v", fields)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != content {
+		t.Fatalf("large write content mismatch: got %d bytes, want %d", len(got), len(content))
+	}
+}
+
+func TestProcessFileReadEscapedOutputFitsCompatibilityBudget(t *testing.T) {
+	bin := os.Getenv("C_EXECUTOR_TEST_PATH")
+	if bin == "" {
+		bin = filepath.Join("..", "..", "bin", "host-executor")
+	}
+	if _, err := os.Stat(bin); err != nil {
+		t.Skip("build C executor first: " + err.Error())
+	}
+	path := filepath.Join(t.TempDir(), "nul-data.bin")
+	content := strings.Repeat("\x00", 2*1024*1024)
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	e := &Executor{Path: bin, MaxOutputBytes: 1024 * 1024}
+	result, err := e.Execute(context.Background(), "nul-read", "file.read", map[string]any{"path": path, "max_bytes": len(content)}, 15*time.Second)
+	if err != nil {
+		t.Fatalf("2 MiB escaped file.read failed: %v", err)
+	}
+	var fields struct {
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal(result.Response.Result, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if fields.Content != content {
+		t.Fatalf("file.read content mismatch: got %d bytes, want %d", len(fields.Content), len(content))
+	}
+}
+
+func TestProcessDirectoryListingStopsAtSerializedBudget(t *testing.T) {
+	bin := os.Getenv("C_EXECUTOR_TEST_PATH")
+	if bin == "" {
+		bin = filepath.Join("..", "..", "bin", "host-executor")
+	}
+	if _, err := os.Stat(bin); err != nil {
+		t.Skip("build C executor first: " + err.Error())
+	}
+	dir := t.TempDir()
+	namePrefix := strings.Repeat("x", 180)
+	for i := 0; i < 30000; i++ {
+		name := fmt.Sprintf("%s-%05d", namePrefix, i)
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0600); err != nil {
+			t.Fatalf("create directory fixture %d: %v", i, err)
+		}
+	}
+	e := &Executor{Path: bin, MaxOutputBytes: 1024 * 1024}
+	_, err := e.Execute(context.Background(), "large-directory", "directory.list", map[string]any{"path": dir}, 30*time.Second)
+	if err == nil || !strings.Contains(err.Error(), "DIRECTORY_OUTPUT_LIMIT") {
+		t.Fatalf("expected bounded directory listing error, got %v", err)
+	}
+}
+
+func TestExecutorTimeoutKillsCExecutorDescendants(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "child.pid")
+	bin := filepath.Join(dir, "fake-executor")
+	script := "#!/bin/sh\nsleep 30 &\nchild=$!\necho $child > " + pidFile + "\nwait\n"
+	if err := os.WriteFile(bin, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	e := &Executor{Path: bin, MaxOutputBytes: 1024 * 1024}
+	_, err := e.Execute(context.Background(), "child-timeout", "system.info", map[string]any{}, time.Second)
+	if err == nil || !strings.Contains(err.Error(), "timed out or cancelled") {
+		t.Fatalf("expected executor timeout, got %v", err)
+	}
+	pidBytes, readErr := os.ReadFile(pidFile)
+	if readErr != nil {
+		t.Fatalf("read child pid: %v", readErr)
+	}
+	var pid int
+	if _, scanErr := fmt.Sscanf(string(pidBytes), "%d", &pid); scanErr != nil || pid <= 0 {
+		t.Fatalf("invalid child pid %q: %v", pidBytes, scanErr)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if killErr := syscall.Kill(pid, 0); killErr == syscall.ESRCH {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("executor descendant pid %d still exists after process-group cleanup", pid)
+}
+
+func TestCExecutorShellTimeoutKillsDescendants(t *testing.T) {
+	bin := os.Getenv("C_EXECUTOR_TEST_PATH")
+	if bin == "" {
+		bin = filepath.Join("..", "..", "bin", "host-executor")
+	}
+	if _, err := os.Stat(bin); err != nil {
+		t.Skip("build C executor first: " + err.Error())
+	}
+	request, _ := json.Marshal(map[string]any{
+		"protocol_version": "1", "task_id": "c-shell-child-timeout", "operation": "shell.exec",
+		"input": map[string]any{"command": "sleep 30 & child=$!; echo $child; wait", "timeout_seconds": 1},
+	})
+	cmd := exec.Command(bin)
+	cmd.Stdin = strings.NewReader(string(request) + "\n")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("C executor shell timeout returned process error: %v (%s)", err, out)
+	}
+	var response struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			Stdout          string `json:"stdout"`
+			TimedOut        bool   `json:"timed_out"`
+			CleanupComplete bool   `json:"cleanup_complete"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(out, &response); err != nil {
+		t.Fatalf("decode C timeout response %q: %v", out, err)
+	}
+	if !response.OK || !response.Result.TimedOut || !response.Result.CleanupComplete {
+		t.Fatalf("unexpected C timeout result: %#v", response)
+	}
+	var pid int
+	if _, err := fmt.Sscanf(response.Result.Stdout, "%d", &pid); err != nil || pid <= 0 {
+		t.Fatalf("invalid child pid in stdout %q: %v", response.Result.Stdout, err)
+	}
+	if err := syscall.Kill(pid, 0); err != syscall.ESRCH {
+		t.Fatalf("C executor descendant pid %d still exists (kill error=%v)", pid, err)
+	}
+}
+
+func TestCExecutorServiceStatusContract(t *testing.T) {
+	bin := os.Getenv("C_EXECUTOR_TEST_PATH")
+	if bin == "" {
+		bin = filepath.Join("..", "..", "bin", "host-executor")
+	}
+	if _, err := os.Stat(bin); err != nil {
+		t.Skip("build C executor first: " + err.Error())
+	}
+	r := runC(t, bin, "service.status", map[string]any{"service": "nonexistent_test_service"})
+	if !r.OK {
+		t.Fatalf("service.status should return command status as result: %#v", r.Error)
+	}
+	for _, key := range []string{"service", "action", "exit_code", "stdout", "stderr"} {
+		if _, ok := r.Result[key]; !ok {
+			t.Errorf("service.status result missing %q: %#v", key, r.Result)
+		}
+	}
+	if r.Result["service"] != "nonexistent_test_service" || r.Result["action"] != "status" {
+		t.Fatalf("unexpected service.status identity: %#v", r.Result)
+	}
+}
+
+func TestCExecutorLogsTailContract(t *testing.T) {
+	bin := os.Getenv("C_EXECUTOR_TEST_PATH")
+	if bin == "" {
+		bin = filepath.Join("..", "..", "bin", "host-executor")
+	}
+	if _, err := os.Stat(bin); err != nil {
+		t.Skip("build C executor first: " + err.Error())
+	}
+	path := filepath.Join(t.TempDir(), "sample.log")
+	if err := os.WriteFile(path, []byte("one\ntwo\nthree\nfour\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	r := runC(t, bin, "logs.tail", map[string]any{"path": path, "lines": 2})
+	if !r.OK {
+		t.Fatalf("logs.tail failed: %#v", r.Error)
+	}
+	if r.Result["stdout"] != "three\nfour\n" || r.Result["returncode"] != float64(0) {
+		t.Fatalf("unexpected logs.tail result: %#v", r.Result)
 	}
 }

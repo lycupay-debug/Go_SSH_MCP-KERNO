@@ -24,7 +24,7 @@ func TestCredentialDefaultLifecycleIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
 	if err = pool.Ping(ctx); err != nil {
 		t.Fatal(err)
 	}

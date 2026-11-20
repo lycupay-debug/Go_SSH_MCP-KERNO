@@ -50,6 +50,49 @@ func TestRunExecutesEightTasksConcurrently(t *testing.T) {
 	}
 }
 
+func TestRunWritesRestrictedLogsAndAuditRecords(t *testing.T) {
+	root := t.TempDir()
+	a, b := filepath.Join(root, "a"), filepath.Join(root, "b")
+	for _, dir := range []string{a, b} {
+		if err := os.Mkdir(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var mu sync.Mutex
+	events := make(map[string]int)
+	result, err := Run(context.Background(), Request{Tasks: []Task{
+		task("first", a, "printf first", 5),
+		task("second", b, "printf second", 5),
+	}}, filepath.Join(root, "logs"), func(event string, fields map[string]any) {
+		mu.Lock()
+		events[event]++
+		mu.Unlock()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if events["parallel_task_started"] != 2 || events["parallel_task_finished"] != 2 {
+		t.Fatalf("task audit event counts = %#v, want two started and two finished", events)
+	}
+	for _, item := range result.Results {
+		info, err := os.Stat(item.LogPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0600 {
+			t.Errorf("task log %s mode=%o, want 600", item.LogPath, info.Mode().Perm())
+		}
+		runDir := filepath.Dir(item.LogPath)
+		runInfo, err := os.Stat(runDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if runInfo.Mode().Perm() != 0700 {
+			t.Errorf("run log directory mode=%o, want 700", runInfo.Mode().Perm())
+		}
+	}
+}
+
 func TestValidateCapsMaxParallelAtEight(t *testing.T) {
 	root := t.TempDir()
 	tasks := []Task{task("a", root, "true", 1), task("b", filepath.Dir(root), "true", 1)}
@@ -143,14 +186,17 @@ func TestRunStopsAtOutputLimit(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsProtectedProjectDirectory(t *testing.T) {
-	if info, err := os.Stat(protectedRoot); err != nil || !info.IsDir() {
-		t.Skip("protected project path does not exist on this host")
+func TestValidateDoesNotApplyHardcodedWorkingDirectoryPolicy(t *testing.T) {
+	temp := t.TempDir()
+	_, maxParallel, err := validate(Request{Tasks: []Task{
+		task("root", "/", "true", 1),
+		task("temp", temp, "true", 1),
+	}})
+	if err != nil {
+		t.Fatalf("system root and arbitrary existing directories must not be blocked by path policy: %v", err)
 	}
-	other := t.TempDir()
-	_, _, err := validate(Request{Tasks: []Task{task("a", protectedRoot, "true", 1), task("b", other, "true", 1)}})
-	if err == nil || !strings.Contains(err.Error(), "禁止在 /opt/kerno 内运行") {
-		t.Fatalf("expected protected directory rejection, got %v", err)
+	if maxParallel != 8 {
+		t.Fatalf("default max parallel = %d, want 8", maxParallel)
 	}
 }
 

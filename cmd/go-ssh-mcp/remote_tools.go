@@ -111,20 +111,21 @@ func remoteActorFromTokenInfo(ti *auth.TokenInfo) (remote.Actor, error) {
 	clientID, _ := ti.Extra["client_id"].(string)
 	return remote.Actor{UserID: ti.UserID, ClientID: clientID}, nil
 }
-func errorText(err error) string {
-	if err == nil {
-		return ""
-	}
-	return err.Error()
-}
 
 // auditRemoteOperation records a remote tool result without recording command text or secrets.
 // The caller supplies only bounded metadata and, where applicable, a command hash.
+func hashAuditValue(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
+
 func auditRemoteOperation(ctx context.Context, store *remote.Store, actor remote.Actor, targetID, credentialID, operation string, operationErr error, details map[string]any) error {
 	if details == nil {
 		details = make(map[string]any)
 	}
-	details["error"] = errorText(operationErr)
+	if operationErr != nil {
+		details["error_type"] = auditErrorType(operationErr)
+	}
 	outcome := "success"
 	if operationErr != nil {
 		outcome = "failure"
@@ -193,7 +194,7 @@ func registerRemoteTools(mcpServer *mcp.Server, application *app, resourceMetada
 		}
 		out, err := application.remote.SaveCredential(ctx, actor, in.TargetID, in.Name, in.PrivateKey, in.Passphrase)
 		auditTargetID := out.TargetID
-		if auditErr := auditRemoteOperation(ctx, application.remote, actor, auditTargetID, out.ID, "credential.create", err, map[string]any{"requested_target_id": in.TargetID, "credential_name": in.Name}); auditErr != nil {
+		if auditErr := auditRemoteOperation(ctx, application.remote, actor, auditTargetID, out.ID, "credential.create", err, map[string]any{"requested_target_id": in.TargetID, "credential_name_sha256": hashAuditValue(in.Name)}); auditErr != nil {
 			return nil, nil, auditErr
 		}
 		return nil, &out, err

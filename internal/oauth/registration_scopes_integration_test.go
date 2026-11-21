@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -12,7 +13,10 @@ import (
 )
 
 func TestRegisterClientPersistsBothRequiredScopesIntegration(t *testing.T) {
-	dsn := testDatabaseURL(t)
+	dsn := os.Getenv("GO_SSH_MCP_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("set GO_SSH_MCP_TEST_DATABASE_URL to run PostgreSQL-backed OAuth registration tests")
+	}
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {

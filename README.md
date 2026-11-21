@@ -28,7 +28,7 @@ KERNO 是一个基于 Go 控制平面、独立 C Executor、PostgreSQL 与 Model
 | `get_service_status` | `service` | 查询系统服务状态；当前实现依赖 FreeBSD 服务管理约定 |
 | `get_service_logs` | `path`、可选 `lines`（默认 100，范围 1–2000） | 读取指定日志文件末尾；日志可能包含敏感数据 |
 | `execute_shell` | `command`、可选 `timeout_seconds`（默认 30，范围 1–300） | 通过系统 Shell 执行命令，返回退出码、标准输出和标准错误；拥有服务运行账户的系统权限 |
-| `execute_parallel` | `tasks`（2–32 个独立任务）、可选 `max_parallel`（默认 8，最大 8） | 并行运行独立 Shell 任务；任务须使用不同工作目录，同一 Git 仓库须使用独立 worktree；包含超时、输出限制、清理和审计 |
+| `execute_parallel` | `tasks`（2–32 个独立任务）、可选 `max_parallel`（默认 16，最大 16） | 并行运行独立 Shell 任务；任务须使用不同工作目录，同一 Git 仓库须使用独立 worktree；包含超时、输出限制、清理和审计 |
 | `database_query` | `sql`、可选 `database`、可选 `max_rows`（默认 100，范围 1–500） | 使用 `DATABASE_URL` 配置的 PostgreSQL 角色权限执行 SQL；数据库角色权限决定实际影响范围 |
 | `remote_target_create` | `name`、`host`、`port`、`username`、`host_key` | 登记远端 SSH 目标；必须提交经独立可信渠道核验的 Host 公钥 |
 | `remote_target_list` | 无 | 列出当前 OAuth 用户登记的 SSH 目标 |
@@ -41,7 +41,7 @@ KERNO 是一个基于 Go 控制平面、独立 C Executor、PostgreSQL 与 Model
 
 ### 并行执行约束
 
-- 每次请求最多 32 个任务，服务端并发上限为 8。
+- 每次请求最多 32 个任务，单次请求并发上限为 16（默认 16）；所有请求共享服务进程全局 16 个并发槽位。
 - 每个任务应使用独立工作目录；同一 Git 仓库的任务必须使用独立 worktree。
 - 不要让并行任务同时修改同一文件、同一数据库记录或同一部署目标。
 - 任务超时和输出限制不等同于安全沙箱；任务仍以服务进程的系统权限执行。

@@ -19,7 +19,7 @@
 
 ## Bounded parallel execution
 
-- execute_parallel accepts 2–32 independent tasks and has a process-wide maximum of 8 concurrent workers.
+- execute_parallel accepts 2–32 independent tasks and has a process-wide maximum of 16 concurrent workers shared by all execute_parallel requests; each request defaults to 16 and may request 1–16.
 - Each task must use an existing, independently resolved working directory; duplicate task IDs/directories and tasks in the same Git worktree are rejected.
 - Working directories are not restricted to a hard-coded list of system paths.
 - Per-task timeout, output cap, process-group cleanup, restricted task logs and audit records are enforced.

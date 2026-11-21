@@ -15,9 +15,9 @@ func task(id, cwd, command string, timeout int) Task {
 	return Task{TaskID: id, WorkingDirectory: cwd, Command: command, TimeoutSeconds: timeout}
 }
 
-func TestRunExecutesEightTasksConcurrently(t *testing.T) {
+func TestRunExecutesSixteenTasksConcurrently(t *testing.T) {
 	root := t.TempDir()
-	tasks := make([]Task, 8)
+	tasks := make([]Task, 16)
 	for i := range tasks {
 		cwd := filepath.Join(root, string(rune('a'+i)))
 		if err := os.Mkdir(cwd, 0700); err != nil {
@@ -26,16 +26,16 @@ func TestRunExecutesEightTasksConcurrently(t *testing.T) {
 		tasks[i] = task("task-"+string(rune('a'+i)), cwd, "sleep 0.35; printf done", 5)
 	}
 	start := time.Now()
-	result, err := Run(context.Background(), Request{Tasks: tasks, MaxParallel: 8}, filepath.Join(root, "logs"), nil)
+	result, err := Run(context.Background(), Request{Tasks: tasks, MaxParallel: 16}, filepath.Join(root, "logs"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	elapsed := time.Since(start)
-	if result.MaxParallel != 8 || result.TaskCount != 8 {
+	if result.MaxParallel != 16 || result.TaskCount != 16 {
 		t.Fatalf("unexpected run summary: %#v", result)
 	}
 	if elapsed > 1800*time.Millisecond {
-		t.Fatalf("8 tasks did not run concurrently; elapsed=%s", elapsed)
+		t.Fatalf("16 tasks did not run concurrently; elapsed=%s", elapsed)
 	}
 	for _, item := range result.Results {
 		if item.Status != "succeeded" || item.Output != "done" || item.ReturnCode == nil || *item.ReturnCode != 0 {
@@ -93,10 +93,10 @@ func TestRunWritesRestrictedLogsAndAuditRecords(t *testing.T) {
 	}
 }
 
-func TestValidateCapsMaxParallelAtEight(t *testing.T) {
+func TestValidateCapsMaxParallelAtSixteen(t *testing.T) {
 	root := t.TempDir()
 	tasks := []Task{task("a", root, "true", 1), task("b", filepath.Dir(root), "true", 1)}
-	if _, _, err := validate(Request{Tasks: tasks, MaxParallel: 9}); err == nil || !strings.Contains(err.Error(), "1 至 8") {
+	if _, _, err := validate(Request{Tasks: tasks, MaxParallel: 17}); err == nil || !strings.Contains(err.Error(), "1 至 16") {
 		t.Fatalf("expected max_parallel limit error, got %v", err)
 	}
 }
@@ -195,25 +195,25 @@ func TestValidateDoesNotApplyHardcodedWorkingDirectoryPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("system root and arbitrary existing directories must not be blocked by path policy: %v", err)
 	}
-	if maxParallel != 8 {
-		t.Fatalf("default max parallel = %d, want 8", maxParallel)
+	if maxParallel != 16 {
+		t.Fatalf("default max parallel = %d, want 16", maxParallel)
 	}
 }
 
-func TestGlobalParallelSlotPoolIsBoundedAtEight(t *testing.T) {
-	if cap(globalSlots) != 8 {
-		t.Fatalf("global parallel slots=%d, want 8", cap(globalSlots))
+func TestGlobalParallelSlotPoolIsBoundedAtSixteen(t *testing.T) {
+	if cap(globalSlots) != 16 {
+		t.Fatalf("global parallel slots=%d, want 16", cap(globalSlots))
 	}
 	root := t.TempDir()
 	var tasks []Task
-	for i := 0; i < 8; i++ {
+	for i := 0; i < 16; i++ {
 		cwd := filepath.Join(root, "run", string(rune('a'+i)))
 		if err := os.MkdirAll(cwd, 0700); err != nil {
 			t.Fatal(err)
 		}
 		tasks = append(tasks, task("a"+string(rune('a'+i)), cwd, "sleep 0.08", 3))
 	}
-	for i := 0; i < 8; i++ {
+	for i := 0; i < 16; i++ {
 		cwd := filepath.Join(root, "run2", string(rune('a'+i)))
 		if err := os.MkdirAll(cwd, 0700); err != nil {
 			t.Fatal(err)
@@ -222,7 +222,7 @@ func TestGlobalParallelSlotPoolIsBoundedAtEight(t *testing.T) {
 	}
 	var wg sync.WaitGroup
 	errs := make(chan error, 2)
-	for _, batch := range [][]Task{tasks[:8], tasks[8:]} {
+	for _, batch := range [][]Task{tasks[:16], tasks[16:]} {
 		wg.Add(1)
 		go func(batch []Task) {
 			defer wg.Done()
@@ -237,7 +237,7 @@ func TestGlobalParallelSlotPoolIsBoundedAtEight(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if len(globalSlots) > 8 {
-		t.Fatalf("global active task count exceeded cap: %d", len(globalSlots))
+	if len(globalSlots) > 16 {
+		t.Fatalf("global active task count exceeded cap 16: %d", len(globalSlots))
 	}
 }

@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	MaxParallel        = 8
+	MaxParallel        = 16
 	MaxTasks           = 32
 	MaxCommandBytes    = 8000
 	MaxOutputBytes     = 1_000_000

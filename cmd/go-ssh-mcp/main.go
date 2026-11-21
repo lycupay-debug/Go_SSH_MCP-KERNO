@@ -78,7 +78,7 @@ type commandInput struct {
 }
 type parallelInput struct {
 	Tasks       []parallel.Task `json:"tasks" jsonschema_description:"需要并行执行的独立任务；每个任务必须使用不同工作目录，Git 项目需使用独立 worktree。"`
-	MaxParallel int             `json:"max_parallel,omitempty" jsonschema_description:"同时执行的任务上限，默认 8，最大 8。"`
+	MaxParallel int             `json:"max_parallel,omitempty" jsonschema_description:"同时执行的任务上限；省略时默认 16，允许范围 1–16。所有 execute_parallel 请求共享服务进程全局 16 个并发槽位。"`
 }
 
 type databaseInput struct {
@@ -135,7 +135,7 @@ func main() {
 		return
 	}
 	application := &app{runner: runner, remote: &remote.Store{Pool: pool}, logger: logger, auditPath: cfg.AuditLogPath}
-	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "KERNO MCP", Version: "1.0.0"}, &mcp.ServerOptions{Instructions: "管理主机的 KERNO MCP 服务。当前支持平台为 FreeBSD；工具名称、参数、默认值及返回结构与兼容实现保持一致。底层操作由 C 执行器完成，MCP 接口由 Go SDK 提供。所有请求均需有效 OAuth Bearer Token。execute_parallel 在服务进程内部使用有界并发执行独立任务，最大并行数为 8；每个任务必须使用独立工作目录，Git 仓库任务必须使用独立 worktree。"})
+	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "KERNO MCP", Version: "1.0.0"}, &mcp.ServerOptions{Instructions: "KERNO 是运行于 FreeBSD 的高权限主机管理 MCP 服务，通过 OAuth Bearer Token 提供系统信息、文件读写与替换、目录管理、服务状态与日志、Shell、并行 Shell、PostgreSQL 查询以及受独立 remote:ssh:manage scope 保护的远端 SSH 管理工具。工具选择：查询主机状态使用 get_system_info；查看目录使用 list_directory；读取文件使用 read_file；创建或覆盖文件使用 write_file；按文本修改文件使用 replace_in_file；移动和删除路径分别使用 move_path、delete_path；查询服务使用 get_service_status、get_service_logs；单条命令使用 execute_shell；需要同时执行多个互相独立的命令时使用 execute_parallel；执行 PostgreSQL SQL 时使用 database_query；远端 SSH 目标使用 remote_target_create、remote_target_list、remote_target_delete；凭证使用 remote_credential_create、remote_credential_list、remote_credential_set_default、remote_credential_read；远端命令使用 remote_ssh_exec 工具。execute_parallel 接受 2–32 个任务，max_parallel 省略时默认 16，单次请求范围 1–16，所有并发请求共享服务进程全局 16 个执行槽位；每个任务必须使用不同工作目录，同一 Git 仓库必须使用独立 git worktree，禁止并行修改同一资源。任务超时 1–300 秒，单任务输出上限约 1 MB。Shell 和并行任务以服务进程权限执行，不是沙箱；涉及破坏性操作时先检查目标和影响范围。远端 SSH 工具需要 remote:ssh:manage scope。当前支持平台为 FreeBSD；MCP 接口由官方 Go SDK 提供，系统级文件操作由独立 C Executor 完成。"})
 	resourceMetadataURL, err := protectedResourceMetadataURL(cfg.ResourceURL)
 	if err != nil {
 		log.Fatal(err)
@@ -151,7 +151,7 @@ func main() {
 	mux.Handle("/mcp", initialOAuthScopeChallenge(authHandler(handler)))
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte("{\"status\":\"ok\",\"service\":\"Go_SSH_MCP\",\"execution_mode\":\"synchronous+bounded-parallel\",\"max_parallel\":8}"))
+		_, _ = w.Write([]byte("{\"status\":\"ok\",\"service\":\"Go_SSH_MCP\",\"execution_mode\":\"synchronous+bounded-parallel\",\"max_parallel\":16}"))
 	})
 	oauthServer := oauth.New(pool, cfg.PublicIssuerURL, cfg.ResourceURL, key)
 	oauthServer.RegisterRoutes(mux)
@@ -249,7 +249,7 @@ func registerLocalTools(mcpServer *mcp.Server, application *app, pool *pgxpool.P
 		out, err := application.call(ctx, "shell.exec", map[string]any{"command": in.Command, "timeout_seconds": timeout}, timeout, actorFromContext(ctx))
 		return nil, out, err
 	})
-	mcp.AddTool(mcpServer, &mcp.Tool{Name: "execute_parallel", Description: "在 Go SSH MCP 服务内部并行执行 2 至 32 个独立 Shell 任务，最大并行数 8。每个任务必须使用不同工作目录；同一 Git 仓库的并行任务必须使用独立 git worktree。单任务超时 1 至 300 秒，输出上限约 1 MB，任务日志写入受限权限的服务器日志目录。"}, func(ctx context.Context, req *mcp.CallToolRequest, in parallelInput) (*mcp.CallToolResult, parallel.Summary, error) {
+	mcp.AddTool(mcpServer, &mcp.Tool{Name: "execute_parallel", Description: "并行执行 2–32 个彼此独立的 Shell 任务。max_parallel 省略时默认为 16，可设置为 1–16；所有 execute_parallel 请求共享服务进程全局 16 个并发槽位。每个任务必须使用不同工作目录；同一 Git 仓库中的任务必须使用独立 git worktree。不要并行修改同一文件、数据库记录或部署目标。每个任务超时 1–300 秒，单任务输出上限约 1 MB；任务日志写入权限受限的服务端日志目录。任务以服务进程权限运行，不是安全沙箱。"}, func(ctx context.Context, req *mcp.CallToolRequest, in parallelInput) (*mcp.CallToolResult, parallel.Summary, error) {
 		out, err := application.executeParallel(ctx, in, actorFromContext(ctx))
 		return nil, out, err
 	})

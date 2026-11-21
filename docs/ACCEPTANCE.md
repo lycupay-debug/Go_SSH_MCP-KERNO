@@ -21,9 +21,9 @@ Status updated: 2026-11-20. A checked item means the named candidate-level test 
 - [x] write_file.atomic is an optional boolean; default remains false.
 - [ ] Defaults, numeric bounds, result shapes and structured error contracts still need a complete per-tool contract matrix.
 - [x] get_system_info reports Go SDK + C executor, not a Python runtime.
-- [x] execute_parallel validates 2–32 tasks, max parallel 1–8, unique task IDs/directories and distinct Git worktrees.
+- [x] execute_parallel validates 2–32 tasks, max parallel 1–16, unique task IDs/directories and distinct Git worktrees.
 - [x] execute_parallel no longer has a hard-coded working-directory whitelist or /opt/kerno deny rule. Root / is accepted by validation.
-- [x] Independent tasks execute concurrently; the server-wide worker pool is capped at 8.
+- [x] Independent tasks execute concurrently; the server-wide worker pool is capped at 16 across concurrent requests.
 - [x] Timeout, output cap, process-group cleanup, 0700 run directories, 0600 task logs and started/finished audit callbacks have tests.
 - [x] Remote tools enforce tool-level OAuth step-up scope; remote target/credential ownership, host-key pinning and signer validation have PostgreSQL/SSH integration coverage.
 - [x] remote_credential_list serializes non-secret credential metadata only.

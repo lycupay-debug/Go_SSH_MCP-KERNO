@@ -773,12 +773,21 @@ func TestAtomicOperationsPreserveExtendedAttributesAndFileFlags(t *testing.T) {
 	}
 
 	aclSupported := true
-	if output, err := exec.Command("setfacl", "-m", "u:12345:r--", path).CombinedOutput(); err != nil {
-		if strings.Contains(string(output), "Operation not supported") {
+	aclExpected := ""
+	// FreeBSD ZFS commonly exposes native NFSv4 ACLs. UFS and other
+	// filesystems may expose POSIX.1e ACLs instead; probe the native type
+	// first rather than assuming that every mounted filesystem is POSIX.
+	if output, err := exec.Command("setfacl", "-m", "user:12345:r:allow", path).CombinedOutput(); err == nil {
+		aclExpected = "nfs4:user:12345:"
+	} else {
+		output, err = exec.Command("setfacl", "-m", "u:12345:r--", path).CombinedOutput()
+		if err == nil {
+			aclExpected = "posix:user:12345:r--"
+		} else if strings.Contains(string(output), "Operation not supported") || strings.Contains(string(output), "not supported") {
 			aclSupported = false
 			t.Log("filesystem does not support ACLs; ACL preservation assertion skipped")
 		} else {
-			t.Fatalf("setfacl failed: %v: %s", err, output)
+			t.Fatalf("setfacl failed for NFSv4 and POSIX ACL probes: %v: %s", err, output)
 		}
 	}
 
@@ -797,8 +806,21 @@ func TestAtomicOperationsPreserveExtendedAttributesAndFileFlags(t *testing.T) {
 		}
 		if aclSupported {
 			acl, err := exec.Command("getfacl", "-n", path).CombinedOutput()
-			if err != nil || !strings.Contains(string(acl), "user:12345:r--") {
-				t.Fatalf("%s: access ACL lost: output=%s err=%v", stage, acl, err)
+			aclText := string(acl)
+			aclPreserved := false
+			if strings.HasPrefix(aclExpected, "nfs4:") {
+				for _, line := range strings.Split(aclText, "\n") {
+					line = strings.TrimSpace(line)
+					if strings.HasPrefix(line, "user:12345:") && strings.HasSuffix(line, ":allow") {
+						aclPreserved = true
+						break
+					}
+				}
+			} else {
+				aclPreserved = strings.Contains(aclText, "user:12345:r--")
+			}
+			if err != nil || !aclPreserved {
+				t.Fatalf("%s: access ACL lost (expected %s): output=%s err=%v", stage, aclExpected, aclText, err)
 			}
 		}
 	}
@@ -814,19 +836,24 @@ func TestAtomicOperationsPreserveExtendedAttributesAndFileFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 	if output, err := exec.Command("chflags", "uchg", immutablePath).CombinedOutput(); err != nil {
-		t.Fatalf("set user immutable flag failed: %v: %s", err, output)
-	}
-	_, operationErr := a.call(context.Background(), "file.write", map[string]any{"path": immutablePath, "content": "must-not-replace", "atomic": true}, 5, "test-actor")
-	if operationErr == nil || !strings.Contains(operationErr.Error(), "ATOMIC_FILE_FLAGS_UNSUPPORTED") {
-		_ = exec.Command("chflags", "nouchg", immutablePath).Run()
-		t.Fatalf("atomic write should reject immutable target flags, got %v", operationErr)
-	}
-	if output, err := exec.Command("chflags", "nouchg", immutablePath).CombinedOutput(); err != nil {
-		t.Fatalf("clear user immutable flag failed: %v: %s", err, output)
-	}
-	original, err := os.ReadFile(immutablePath)
-	if err != nil || string(original) != "immutable-original" {
-		t.Fatalf("immutable target changed despite rejected atomic write: content=%q err=%v", original, err)
+		if strings.Contains(string(output), "Operation not supported") || strings.Contains(string(output), "not supported") {
+			t.Logf("filesystem does not support the user immutable flag; immutable-flag assertion skipped: %s", output)
+		} else {
+			t.Fatalf("set user immutable flag failed: %v: %s", err, output)
+		}
+	} else {
+		_, operationErr := a.call(context.Background(), "file.write", map[string]any{"path": immutablePath, "content": "must-not-replace", "atomic": true}, 5, "test-actor")
+		if operationErr == nil || !strings.Contains(operationErr.Error(), "ATOMIC_FILE_FLAGS_UNSUPPORTED") {
+			_ = exec.Command("chflags", "nouchg", immutablePath).Run()
+			t.Fatalf("atomic write should reject immutable target flags, got %v", operationErr)
+		}
+		if output, err := exec.Command("chflags", "nouchg", immutablePath).CombinedOutput(); err != nil {
+			t.Fatalf("clear user immutable flag failed: %v: %s", err, output)
+		}
+		original, err := os.ReadFile(immutablePath)
+		if err != nil || string(original) != "immutable-original" {
+			t.Fatalf("immutable target changed despite rejected atomic write: content=%q err=%v", original, err)
+		}
 	}
 }
 
@@ -1506,6 +1533,9 @@ func TestRuntimeToolRegistryExposesAllTwentyToolsAndSchemas(t *testing.T) {
 			t.Fatalf("duplicate runtime tool name %q", tool.Name)
 		}
 		seen[tool.Name] = true
+		if tool.Name == "execute_parallel" && (!strings.Contains(tool.Description, "默认为 16") || !strings.Contains(tool.Description, "全局 16 个并发槽位")) {
+			t.Errorf("execute_parallel description must explain default and global concurrency 16: %q", tool.Description)
+		}
 
 		wantProperties, ok := expectedProperties[tool.Name]
 		if !ok {

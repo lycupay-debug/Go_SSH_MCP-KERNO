@@ -148,7 +148,7 @@ func main() {
 	handler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server { return mcpServer }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true, DisableLocalhostProtection: true})
 	authHandler := auth.RequireBearerToken(tokenVerifier(pool, cfg.ResourceURL), &auth.RequireBearerTokenOptions{ResourceMetadataURL: resourceMetadataURL, Scopes: []string{"go-ssh-mcp"}})
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", authHandler(handler))
+	mux.Handle("/mcp", initialOAuthScopeChallenge(authHandler(handler)))
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte("{\"status\":\"ok\",\"service\":\"Go_SSH_MCP\",\"execution_mode\":\"synchronous+bounded-parallel\",\"max_parallel\":8}"))

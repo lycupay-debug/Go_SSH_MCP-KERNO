@@ -141,13 +141,13 @@ func (s *Server) registerClient(w http.ResponseWriter, r *http.Request) {
 		}
 		seen[raw] = true
 	}
-	if in.Scope == "" {
-		in.Scope = scopeName
-	}
-	if !scopeSubset(strings.Fields(in.Scope), []string{scopeName, "offline_access", remoteSSHScope}) {
+	requestedScopes := strings.Fields(in.Scope)
+	effectiveScopes, scopesOK := registrationScopes(in.Scope)
+	if !scopesOK {
 		oauthError(w, http.StatusBadRequest, "invalid_client_metadata", "Unsupported scope")
 		return
 	}
+	in.Scope = strings.Join(effectiveScopes, " ")
 	if len(in.GrantTypes) == 0 {
 		in.GrantTypes = []string{"authorization_code", "refresh_token"}
 	}
@@ -179,7 +179,13 @@ func (s *Server) registerClient(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, http.StatusInternalServerError, "server_error", "Could not register client")
 		return
 	}
-	s.audit(r.Context(), "client.registered", "success", "", id, map[string]any{"client_name": in.ClientName, "redirect_uri_count": len(in.RedirectURIs)})
+	clientNameHash := sha256.Sum256([]byte(in.ClientName))
+	s.audit(r.Context(), "client.registered", "success", "", id, map[string]any{
+		"client_name_sha256": hex.EncodeToString(clientNameHash[:]),
+		"redirect_uri_count": len(in.RedirectURIs),
+		"requested_scopes":   requestedScopes,
+		"effective_scopes":   effectiveScopes,
+	})
 	metadata["client_id_issued_at"] = time.Now().Unix()
 	writeJSON(w, http.StatusCreated, metadata)
 }
@@ -736,6 +742,26 @@ func randomToken(n int) (string, error) {
 }
 func hashToken(v string) string      { sum := sha256.Sum256([]byte(v)); return hex.EncodeToString(sum[:]) }
 func constantEqual(a, b string) bool { return hmac.Equal([]byte(a), []byte(b)) }
+
+// registrationScopes guarantees that every newly registered client can request
+// both the base MCP API and remote SSH management permissions. Optional
+// offline_access is preserved only when the client explicitly requests it.
+func registrationScopes(requested string) ([]string, bool) {
+	requestedScopes := strings.Fields(requested)
+	allowedScopes := []string{scopeName, remoteSSHScope, "offline_access"}
+	if len(requestedScopes) > 0 && !scopeSubset(requestedScopes, allowedScopes) {
+		return nil, false
+	}
+	effective := []string{scopeName, remoteSSHScope}
+	for _, requestedScope := range requestedScopes {
+		if requestedScope == "offline_access" {
+			effective = append(effective, requestedScope)
+			break
+		}
+	}
+	return effective, true
+}
+
 func authorizationScopes(requested string, registered []string) []string {
 	if strings.TrimSpace(requested) == "" {
 		return append([]string(nil), registered...)

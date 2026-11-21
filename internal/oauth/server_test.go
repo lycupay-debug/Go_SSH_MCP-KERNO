@@ -172,3 +172,37 @@ func TestAccessTokenTTLIs24Hours(t *testing.T) {
 		t.Fatalf("access token TTL=%d seconds, want 86400", got)
 	}
 }
+
+func TestRegistrationScopesAlwaysIncludeRemoteSSH(t *testing.T) {
+	cases := []struct {
+		name      string
+		requested string
+		want      []string
+		valid     bool
+	}{
+		{name: "omitted", requested: "", want: []string{scopeName, remoteSSHScope}, valid: true},
+		{name: "base only", requested: scopeName, want: []string{scopeName, remoteSSHScope}, valid: true},
+		{name: "both explicit", requested: scopeName + " " + remoteSSHScope, want: []string{scopeName, remoteSSHScope}, valid: true},
+		{name: "optional offline access", requested: scopeName + " offline_access", want: []string{scopeName, remoteSSHScope, "offline_access"}, valid: true},
+		{name: "unsupported scope", requested: scopeName + " admin", valid: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := registrationScopes(tc.requested)
+			if ok != tc.valid {
+				t.Fatalf("valid=%v want %v, scopes=%v", ok, tc.valid, got)
+			}
+			if !tc.valid {
+				return
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("scopes=%v want %v", got, tc.want)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Fatalf("scopes=%v want %v", got, tc.want)
+				}
+			}
+		})
+	}
+}

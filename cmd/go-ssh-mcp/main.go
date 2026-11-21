@@ -25,7 +25,6 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/lycupay-debug/Go_SSH_MCP-KERNO/internal/auditredact"
 	"github.com/lycupay-debug/Go_SSH_MCP-KERNO/internal/config"
 	"github.com/lycupay-debug/Go_SSH_MCP-KERNO/internal/executor"
 	"github.com/lycupay-debug/Go_SSH_MCP-KERNO/internal/oauth"
@@ -545,7 +544,7 @@ func writeAudit(path string, entry map[string]any) error {
 	}
 	f := os.NewFile(uintptr(fd), path)
 	defer f.Close()
-	raw, err := json.Marshal(auditredact.Map(entry))
+	raw, err := json.Marshal(entry)
 	if err != nil {
 		return err
 	}

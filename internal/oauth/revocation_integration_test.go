@@ -24,7 +24,7 @@ func TestTokenRevocationIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(pool.Close)
+	defer pool.Close()
 	if err = pool.Ping(ctx); err != nil {
 		t.Fatal(err)
 	}

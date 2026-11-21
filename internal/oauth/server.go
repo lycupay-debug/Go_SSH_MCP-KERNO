@@ -21,7 +21,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/lycupay-debug/Go_SSH_MCP-KERNO/internal/auditredact"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -38,7 +37,6 @@ type Server struct {
 	SigningKey []byte
 	mu         sync.Mutex
 	rates      map[string]rateWindow
-	now        func() time.Time
 }
 
 type rateWindow struct {
@@ -64,13 +62,6 @@ type clientRegistration struct {
 	GrantTypes              []string `json:"grant_types"`
 	ResponseTypes           []string `json:"response_types"`
 	Scope                   string   `json:"scope"`
-}
-
-func (s *Server) currentTime() time.Time {
-	if s.now != nil {
-		return s.now()
-	}
-	return time.Now()
 }
 
 func (s *Server) endpoint(path string) string { return strings.TrimRight(s.Issuer, "/") + path }
@@ -188,8 +179,7 @@ func (s *Server) registerClient(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, http.StatusInternalServerError, "server_error", "Could not register client")
 		return
 	}
-	clientNameHash := sha256.Sum256([]byte(in.ClientName))
-	s.audit(r.Context(), "client.registered", "success", "", id, map[string]any{"client_name_sha256": hex.EncodeToString(clientNameHash[:]), "redirect_uri_count": len(in.RedirectURIs)})
+	s.audit(r.Context(), "client.registered", "success", "", id, map[string]any{"client_name": in.ClientName, "redirect_uri_count": len(in.RedirectURIs)})
 	metadata["client_id_issued_at"] = time.Now().Unix()
 	writeJSON(w, http.StatusCreated, metadata)
 }
@@ -468,7 +458,7 @@ func (s *Server) exchangeCode(w http.ResponseWriter, r *http.Request) {
 		FROM oauth.authorization_codes c JOIN oauth.clients cl ON cl.client_id=c.client_id
 		JOIN oauth.users u ON u.id=c.user_id
 		WHERE c.code_hash=$1 AND c.client_id=$2 AND c.exchanged_at IS NULL AND u.is_enabled=TRUE FOR UPDATE OF c`, hashToken(code), clientID).Scan(&codeID, &userID, &storedRedirect, &storedChallenge, &scopes, &resource, &expires, &enabled)
-	if err != nil || !enabled || !s.currentTime().Before(expires) || storedRedirect != redirectURI || storedChallenge != challenge || resource != s.Resource {
+	if err != nil || !enabled || time.Now().After(expires) || storedRedirect != redirectURI || storedChallenge != challenge || resource != s.Resource {
 		oauthError(w, http.StatusBadRequest, "invalid_grant", "Authorization code, redirect URI, PKCE verifier or resource is invalid")
 		return
 	}
@@ -559,7 +549,7 @@ func (s *Server) refresh(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, http.StatusBadRequest, "invalid_grant", "Refresh-token reuse detected; token family revoked")
 		return
 	}
-	if revoked != nil || !s.currentTime().Before(expires) || resource != s.Resource {
+	if revoked != nil || time.Now().After(expires) || resource != s.Resource {
 		oauthError(w, http.StatusBadRequest, "invalid_grant", "Refresh token is expired or revoked")
 		return
 	}
@@ -689,14 +679,14 @@ func (s *Server) verify(token string) (signedRequest, error) {
 	if err = json.Unmarshal(raw, &p); err != nil {
 		return p, err
 	}
-	if s.currentTime().Unix() >= p.Expires || p.ClientID == "" || p.RedirectURI == "" || p.Resource != s.Resource {
+	if time.Now().Unix() > p.Expires || p.ClientID == "" || p.RedirectURI == "" || p.Resource != s.Resource {
 		return p, errors.New("expired or mismatched request")
 	}
 	return p, nil
 }
 
 func (s *Server) audit(ctx context.Context, event, outcome, userID, clientID string, details map[string]any) {
-	raw, err := json.Marshal(auditredact.Map(details))
+	raw, err := json.Marshal(details)
 	if err != nil {
 		raw = []byte("{}")
 	}

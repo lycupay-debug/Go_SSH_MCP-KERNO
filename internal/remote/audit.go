@@ -12,12 +12,11 @@ import (
 	"encoding/json"
 
 	"github.com/google/uuid"
-	"github.com/lycupay-debug/Go_SSH_MCP-KERNO/internal/auditredact"
 )
 
 // Audit persists operation metadata; callers must not pass secrets or raw command text.
 func (s *Store) Audit(ctx context.Context, actor Actor, targetID, credentialID, operation, outcome string, details map[string]any) error {
-	raw, err := json.Marshal(auditredact.Map(details))
+	raw, err := json.Marshal(details)
 	if err != nil {
 		return err
 	}

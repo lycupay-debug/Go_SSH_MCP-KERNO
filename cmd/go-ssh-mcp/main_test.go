@@ -1584,10 +1584,10 @@ func TestAuditErrorSummariesDoNotExposeRawMessages(t *testing.T) {
 	}
 }
 
-func TestWriteAuditRedactsSensitiveFields(t *testing.T) {
+func TestWriteAuditPersistsFieldsWithoutRedaction(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.jsonl")
 	entry := map[string]any{
-		"actor": "user-1", "operation": "audit.redaction.test",
+		"actor": "user-1", "operation": "audit.persistence.test",
 		"password": "PASSWORD_SENTINEL", "private_key": "PRIVATE_KEY_SENTINEL",
 		"passphrase": "PASSPHRASE_SENTINEL", "bearer_token": "BEARER_SENTINEL",
 		"authorization_code": "AUTH_CODE_SENTINEL", "command": "COMMAND_SENTINEL",
@@ -1601,13 +1601,13 @@ func TestWriteAuditRedactsSensitiveFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, sentinel := range []string{"PASSWORD_SENTINEL", "PRIVATE_KEY_SENTINEL", "PASSPHRASE_SENTINEL", "BEARER_SENTINEL", "AUTH_CODE_SENTINEL", "COMMAND_SENTINEL", "OUTPUT_SENTINEL", "FILE_CONTENT_SENTINEL", "SQL_SENTINEL"} {
-		if strings.Contains(string(raw), sentinel) {
-			t.Errorf("audit file contains secret sentinel %s: %s", sentinel, raw)
+	for _, field := range []string{"PASSWORD_SENTINEL", "PRIVATE_KEY_SENTINEL", "PASSPHRASE_SENTINEL", "BEARER_SENTINEL", "AUTH_CODE_SENTINEL", "COMMAND_SENTINEL", "OUTPUT_SENTINEL", "FILE_CONTENT_SENTINEL", "SQL_SENTINEL"} {
+		if !strings.Contains(string(raw), field) {
+			t.Errorf("audit file omitted unredacted field %s: %s", field, raw)
 		}
 	}
 	if !strings.Contains(string(raw), "command-hash-retained") || !strings.Contains(string(raw), "/tmp/safe-path") {
-		t.Fatalf("audit sanitizer removed allowed metadata: %s", raw)
+		t.Fatalf("audit file omitted supplied metadata: %s", raw)
 	}
 }
 

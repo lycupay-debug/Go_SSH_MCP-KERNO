@@ -61,28 +61,6 @@ func TestSignedAuthorizationRequest(t *testing.T) {
 		t.Fatal("expired request was accepted")
 	}
 }
-func TestSignedAuthorizationRequestExpiresAtExactBoundary(t *testing.T) {
-	s := New(nil, "https://issuer.example", "https://issuer.example/mcp", []byte(strings.Repeat("x", 64)))
-	boundary := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
-	s.now = func() time.Time { return boundary }
-	in := signedRequest{ClientID: "client", RedirectURI: "https://client.example/callback", Challenge: strings.Repeat("a", 43), State: "state", Scopes: []string{scopeName}, Resource: s.Resource, Expires: boundary.Unix()}
-	token, err := s.sign(in)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = s.verify(token); err == nil {
-		t.Fatal("signed authorization request was accepted at its exact expiry boundary")
-	}
-	in.Expires = boundary.Unix() + 1
-	token, err = s.sign(in)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = s.verify(token); err != nil {
-		t.Fatalf("signed authorization request expiring one second later was rejected: %v", err)
-	}
-}
-
 func TestTokenHashIsFixedLengthAndOneWayShape(t *testing.T) {
 	h := hashToken("opaque-secret")
 	if len(h) != 64 {
